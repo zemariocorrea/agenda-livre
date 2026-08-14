@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: onboarding
+      POSTGRES_USER: onboarding
+      POSTGRES_PASSWORD: onboarding
+    ports:
+      - "5432:5432"
+    volumes:
+      - onboarding_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U onboarding -d onboarding"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: onboarding
+      MINIO_ROOT_PASSWORD: onboarding-local-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - onboarding_minio_data:/data
+
+volumes:
+  onboarding_postgres_data:
+  onboarding_minio_data:

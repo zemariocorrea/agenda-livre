@@ -1,0 +1,76 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  ATENDENTE
+  APROVADOR
+}
+
+model Tenant {
+  id        String    @id @default(uuid()) @db.Uuid
+  slug      String    @unique
+  name      String
+  isActive  Boolean   @default(true) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  users     User[]
+  roles     UserRole[]
+  sessions  Session[]
+
+  @@map("tenants")
+}
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  tenantId     String     @map("tenant_id") @db.Uuid
+  email        String
+  displayName  String     @map("display_name")
+  passwordHash String     @map("password_hash")
+  isActive     Boolean    @default(true) @map("is_active")
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant       Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  roles        UserRole[]
+  sessions     Session[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId, isActive])
+  @@map("users")
+}
+
+model UserRole {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  role      Role
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, role])
+  @@index([tenantId, role])
+  @@map("user_roles")
+}
+
+model Session {
+  id        String    @id @default(uuid()) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, userId, revokedAt])
+  @@index([expiresAt])
+  @@map("sessions")
+}
