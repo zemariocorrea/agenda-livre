@@ -11,6 +11,16 @@ type Tenant = {
   location: string;
 };
 
+type Professional = {
+  id: string;
+  name: string;
+  title: string;
+  bio: string;
+  color: string;
+  durationMinutes: number;
+  priceCents: number;
+};
+
 type Service = {
   id: string;
   name: string;
@@ -18,6 +28,7 @@ type Service = {
   durationMinutes: number;
   priceCents: number;
   color: string;
+  professionals: Professional[];
 };
 
 type DateOption = {
@@ -31,6 +42,11 @@ type Slot = {
   localTime: string;
   startsAtUtc: string;
   endsAtUtc: string;
+  professionalId: string;
+  professionalName: string;
+  professionalTitle: string;
+  durationMinutes: number;
+  priceCents: number;
 };
 
 const defaultTenant: Tenant = {
@@ -47,13 +63,14 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
   const [tenant, setTenant] = useState(defaultTenant);
   const [services, setServices] = useState<Service[]>([]);
   const [serviceId, setServiceId] = useState("");
+  const [professionalId, setProfessionalId] = useState("any");
   const [dateIndex, setDateIndex] = useState(0);
-  const [time, setTime] = useState("");
+  const [slotKey, setSlotKey] = useState("");
   const [payNow, setPayNow] = useState(false);
   const [customer, setCustomer] = useState({ name: "", email: "", phone: "" });
   const [availableSlots, setAvailableSlots] = useState<Slot[]>([]);
   const [loadingCatalog, setLoadingCatalog] = useState(true);
-  const [loadingSlots, setLoadingSlots] = useState(false);
+  const [loadingSlots, setLoadingSlots] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [calendarUrl, setCalendarUrl] = useState("");
@@ -63,12 +80,11 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
   const dates = useMemo(() => buildDateOptions(tenant.timezone), [tenant.timezone]);
   const service = useMemo(() => services.find((item) => item.id === serviceId) ?? services[0], [serviceId, services]);
   const selectedDate = dates[dateIndex] ?? dates[0];
-  const selectedSlot = availableSlots.find((slot) => slot.localTime === time);
-  const money = useMemo(() => new Intl.NumberFormat("pt-BR", { style: "currency", currency: tenant.currency }), [tenant.currency]);
-  const advance = () => {
-    if (step === 1) setLoadingSlots(true);
-    setStep((current) => Math.min(current + 1, 4));
-  };
+  const selectedSlot = availableSlots.find((slot) => slotId(slot) === slotKey);
+  const money = useMemo(
+    () => new Intl.NumberFormat("pt-BR", { style: "currency", currency: tenant.currency }),
+    [tenant.currency],
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -85,7 +101,9 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
         setServiceId((current) => catalog.some((item) => item.id === current) ? current : (catalog[0]?.id ?? ""));
       })
       .catch((catalogError) => {
-        if ((catalogError as Error).name !== "AbortError") setError(catalogError instanceof Error ? catalogError.message : "Não foi possível carregar a agenda.");
+        if ((catalogError as Error).name !== "AbortError") {
+          setError(catalogError instanceof Error ? catalogError.message : "Não foi possível carregar a agenda.");
+        }
       })
       .finally(() => setLoadingCatalog(false));
     return () => controller.abort();
@@ -94,7 +112,8 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
   useEffect(() => {
     if (step !== 2 || !serviceId || !selectedDate) return;
     const controller = new AbortController();
-    fetch(`/api/public/availability?tenant=${encodeURIComponent(tenant.slug)}&serviceId=${encodeURIComponent(serviceId)}&date=${selectedDate.iso}`, { signal: controller.signal })
+    const professionalQuery = professionalId === "any" ? "" : `&professionalId=${encodeURIComponent(professionalId)}`;
+    fetch(`/api/public/availability?tenant=${encodeURIComponent(tenant.slug)}&serviceId=${encodeURIComponent(serviceId)}&date=${selectedDate.iso}${professionalQuery}`, { signal: controller.signal })
       .then(async (response) => {
         const data = await response.json() as { slots?: Slot[]; error?: { message?: string } };
         if (!response.ok) throw new Error(data.error?.message ?? "Não foi possível consultar os horários.");
@@ -102,18 +121,32 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
       })
       .then((slots) => {
         setAvailableSlots(slots);
-        setTime((current) => slots.some((slot) => slot.localTime === current) ? current : (slots[0]?.localTime ?? ""));
+        setSlotKey((current) => slots.some((slot) => slotId(slot) === current) ? current : (slots[0] ? slotId(slots[0]) : ""));
       })
       .catch((availabilityError) => {
         if ((availabilityError as Error).name !== "AbortError") {
           setAvailableSlots([]);
-          setTime("");
+          setSlotKey("");
           setError(availabilityError instanceof Error ? availabilityError.message : "Não foi possível consultar os horários.");
         }
       })
       .finally(() => setLoadingSlots(false));
     return () => controller.abort();
-  }, [selectedDate, serviceId, step, tenant.slug]);
+  }, [selectedDate, serviceId, professionalId, step, tenant.slug]);
+
+  function selectService(id: string) {
+    setServiceId(id);
+    setProfessionalId("any");
+    setSlotKey("");
+    setError("");
+  }
+
+  function refreshSlots(change: () => void) {
+    setLoadingSlots(true);
+    setError("");
+    setSlotKey("");
+    change();
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -128,7 +161,14 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
       const response = await fetch("/api/public/bookings", {
         method: "POST",
         headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey.current },
-        body: JSON.stringify({ tenantSlug: tenant.slug, serviceId, startsAtUtc: selectedSlot.startsAtUtc, customer, paymentPreference: payNow ? "online" : "at_venue" }),
+        body: JSON.stringify({
+          tenantSlug: tenant.slug,
+          serviceId,
+          professionalId: selectedSlot.professionalId,
+          startsAtUtc: selectedSlot.startsAtUtc,
+          customer,
+          paymentPreference: payNow ? "online" : "at_venue",
+        }),
       });
       const data = await response.json() as { calendarUrl?: string; checkoutUrl?: string; paymentFallback?: string; error?: { message?: string } };
       if (!response.ok) throw new Error(data.error?.message ?? "Não foi possível reservar esse horário.");
@@ -138,7 +178,7 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
         window.location.assign(data.checkoutUrl);
         return;
       }
-      advance();
+      setStep(4);
     } catch (submitError) {
       idempotencyKey.current = "";
       setError(submitError instanceof Error ? submitError.message : "Não foi possível reservar esse horário.");
@@ -153,6 +193,7 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
     setCalendarUrl("");
     setPaymentMessage("");
     setPayNow(false);
+    setProfessionalId("any");
     setStep(1);
   }
 
@@ -165,8 +206,9 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
         <p className="confirmation-copy">Enviamos os detalhes para <strong>{customer.email || "seu e-mail"}</strong>.</p>
         <dl className="confirmation-details">
           <div><dt>Atendimento</dt><dd>{service.name}</dd></div>
+          <div><dt>Profissional</dt><dd>{selectedSlot.professionalName}</dd></div>
           <div><dt>Quando</dt><dd>{formatAppointment(selectedSlot.startsAtUtc, tenant.timezone)}</dd></div>
-          <div><dt>Pagamento</dt><dd>{payNow && service.priceCents > 0 ? "Online solicitado" : "No atendimento"}</dd></div>
+          <div><dt>Pagamento</dt><dd>{payNow && selectedSlot.priceCents > 0 ? "Online solicitado" : "No atendimento"}</dd></div>
         </dl>
         {paymentMessage && <p className="payment-message">{paymentMessage}</p>}
         {calendarUrl ? <a className="primary-button calendar-button" href={calendarUrl} target="_blank" rel="noreferrer">Adicionar ao Google Agenda</a> : null}
@@ -182,7 +224,7 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
           <p className="eyebrow">Passo {step} de 3</p>
           <h2>
             {step === 1 && "Como podemos cuidar de você?"}
-            {step === 2 && "Escolha o melhor momento"}
+            {step === 2 && "Escolha profissional e horário"}
             {step === 3 && "Só falta confirmar"}
           </h2>
         </div>
@@ -196,40 +238,57 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
           {loadingCatalog && <p className="empty-state">Carregando atividades...</p>}
           {!loadingCatalog && !services.length && <p className="empty-state">Nenhuma atividade está disponível no momento.</p>}
           {services.map((item, index) => (
-            <button className={`service-option ${serviceId === item.id ? "selected" : ""}`} key={item.id} onClick={() => setServiceId(item.id)} type="button">
+            <button className={`service-option ${serviceId === item.id ? "selected" : ""}`} key={item.id} onClick={() => selectService(item.id)} type="button">
               <span className="service-number">{String(index + 1).padStart(2, "0")}</span>
               <span className="service-copy">
                 <strong>{item.name}</strong>
                 <small>{item.description}</small>
-                <span className="service-meta">{item.durationMinutes} min <i /> {money.format(item.priceCents / 100)}</span>
+                <span className="service-meta">{item.durationMinutes} min <i /> {money.format(item.priceCents / 100)} <i /> {item.professionals.length} profissional(is)</span>
               </span>
               <span className="radio-mark" aria-hidden="true" />
             </button>
           ))}
-          <button className="primary-button" disabled={!serviceId || loadingCatalog} onClick={advance} type="button">Escolher data e horário</button>
+          <button className="primary-button" disabled={!serviceId || loadingCatalog} onClick={() => refreshSlots(() => setStep(2))} type="button">Escolher profissional e horário</button>
         </div>
       )}
 
       {step === 2 && service && selectedDate && (
         <div className="schedule-step">
-          <div className="selected-summary"><span>{service.name}</span><strong>{service.durationMinutes} min · {money.format(service.priceCents / 100)}</strong></div>
-          <div className="month-row"><strong>Próximos dias</strong><span>{tenant.timezone.replace("_", " ")}</span></div>
+          <div className="selected-summary"><span>{service.name}</span><strong>{service.professionals.length} agenda(s) disponível(is)</strong></div>
+          <p className="field-label">Quem vai atender?</p>
+          <div className="professional-picker">
+            <button className={professionalId === "any" ? "selected" : ""} onClick={() => refreshSlots(() => setProfessionalId("any"))} type="button">
+              <span className="professional-avatar any">✦</span>
+              <span><strong>Qualquer profissional</strong><small>Primeira agenda disponível</small></span>
+            </button>
+            {service.professionals.map((professional) => (
+              <button className={professionalId === professional.id ? "selected" : ""} key={professional.id} onClick={() => refreshSlots(() => setProfessionalId(professional.id))} type="button">
+                <span className="professional-avatar" style={{ background: professional.color }}>{initials(professional.name)}</span>
+                <span><strong>{professional.name}</strong><small>{professional.title} · {professional.durationMinutes} min · {money.format(professional.priceCents / 100)}</small></span>
+              </button>
+            ))}
+          </div>
+          <div className="month-row"><strong>Próximos dias</strong><span>{tenant.timezone.replaceAll("_", " ")}</span></div>
           <div className="date-grid">
             {dates.map((date, index) => (
-              <button className={dateIndex === index ? "selected" : ""} key={date.iso} onClick={() => { setLoadingSlots(true); setDateIndex(index); }} type="button">
+              <button className={dateIndex === index ? "selected" : ""} key={date.iso} onClick={() => refreshSlots(() => setDateIndex(index))} type="button">
                 <small>{date.weekday}</small><strong>{date.day}</strong><span>{date.month}</span>
               </button>
             ))}
           </div>
           <p className="field-label">Horários disponíveis</p>
-          {loadingSlots ? <p className="empty-state">Consultando horários...</p> : null}
-          {!loadingSlots && !availableSlots.length ? <p className="empty-state">Não há horários livres nesta data. Escolha outro dia.</p> : null}
+          {loadingSlots ? <p className="empty-state">Consultando agendas...</p> : null}
+          {!loadingSlots && !availableSlots.length ? <p className="empty-state">Não há horários livres nesta data. Escolha outro dia ou profissional.</p> : null}
           <div className="time-grid">
-            {availableSlots.map((slot) => <button className={time === slot.localTime ? "selected" : ""} key={slot.startsAtUtc} onClick={() => setTime(slot.localTime)} type="button">{slot.localTime}</button>)}
+            {availableSlots.map((slot) => (
+              <button className={slotKey === slotId(slot) ? "selected" : ""} key={slotId(slot)} onClick={() => setSlotKey(slotId(slot))} type="button" title={`${slot.professionalName} · ${slot.durationMinutes} min`}>
+                <strong>{slot.localTime}</strong><small>{professionalId === "any" ? slot.professionalName.split(" ")[0] : `${slot.durationMinutes} min`}</small>
+              </button>
+            ))}
           </div>
           <div className="button-row">
             <button className="secondary-button" onClick={() => setStep(1)} type="button">Voltar</button>
-            <button className="primary-button" disabled={!selectedSlot || loadingSlots} onClick={advance} type="button">Continuar</button>
+            <button className="primary-button" disabled={!selectedSlot || loadingSlots} onClick={() => setStep(3)} type="button">Continuar</button>
           </div>
         </div>
       )}
@@ -238,8 +297,8 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
         <form className="details-form" onSubmit={submit}>
           <div className="appointment-ticket">
             <span className="ticket-date"><strong>{selectedDate.day}</strong> {selectedDate.month}</span>
-            <span><strong>{service.name}</strong><small>{time} · {service.durationMinutes} minutos</small></span>
-            <strong>{money.format(service.priceCents / 100)}</strong>
+            <span><strong>{service.name}</strong><small>{selectedSlot.professionalName} · {selectedSlot.localTime} · {selectedSlot.durationMinutes} minutos</small></span>
+            <strong>{money.format(selectedSlot.priceCents / 100)}</strong>
           </div>
           <label>Nome completo<input required autoComplete="name" maxLength={120} placeholder="Como podemos chamar você?" value={customer.name} onChange={(event) => setCustomer({ ...customer, name: event.target.value })} /></label>
           <div className="form-grid">
@@ -252,7 +311,7 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
               <input type="radio" name="payment" checked={!payNow} onChange={() => setPayNow(false)} />
               <span><strong>No atendimento</strong><small>Seu horário fica confirmado agora</small></span>
             </label>
-            {service.priceCents > 0 ? (
+            {selectedSlot.priceCents > 0 ? (
               <label className={payNow ? "selected" : ""}>
                 <input type="radio" name="payment" checked={payNow} onChange={() => setPayNow(true)} />
                 <span><strong>Pagar agora</strong><small>Ambiente seguro de pagamento</small></span>
@@ -260,7 +319,7 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
             ) : null}
           </fieldset>
           <div className="button-row">
-            <button className="secondary-button" onClick={() => { setLoadingSlots(true); setStep(2); }} type="button">Voltar</button>
+            <button className="secondary-button" onClick={() => setStep(2)} type="button">Voltar</button>
             <button className="primary-button" disabled={submitting} type="submit">{submitting ? "Reservando..." : payNow ? "Confirmar e pagar" : "Confirmar agendamento"}</button>
           </div>
           {error && <p className="form-error" role="alert">{error}</p>}
@@ -271,6 +330,14 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
       {error && step !== 3 ? <p className="form-error" role="alert">{error}</p> : null}
     </section>
   );
+}
+
+function slotId(slot: Slot) {
+  return `${slot.startsAtUtc}:${slot.professionalId}`;
+}
+
+function initials(name: string) {
+  return name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
 }
 
 function buildDateOptions(timeZone: string): DateOption[] {

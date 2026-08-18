@@ -13,3 +13,12 @@ export function cleanText(value: unknown, maxLength = 200) {
 export function isEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
+
+export function normalizeSlug(value: unknown) {
+  return cleanText(value, 100)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}

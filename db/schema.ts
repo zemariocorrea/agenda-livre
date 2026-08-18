@@ -14,13 +14,60 @@ export const tenants = sqliteTable("tenants", {
   timezone: text("timezone").notNull().default("America/Sao_Paulo"),
   currency: text("currency").notNull().default("BRL"),
   location: text("location").notNull().default(""),
+  contactEmail: text("contact_email").notNull().default(""),
+  plan: text("plan", { enum: ["trial", "essential", "professional"] }).notNull().default("essential"),
+  maxProfessionals: integer("max_professionals").notNull().default(10),
+  brandColor: text("brand_color").notNull().default("#17624f"),
+  heroTitle: text("hero_title").notNull().default("Seu cuidado começa com um horário só seu."),
+  heroDescription: text("hero_description").notNull().default("Escolha o atendimento, encontre o melhor horário e confirme em poucos passos."),
+  customDomain: text("custom_domain"),
   isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
   ...timestamps,
 });
 
+
+export const users = sqliteTable("users", {
+  id: text("id").primaryKey(),
+  email: text("email").notNull().unique(),
+  displayName: text("display_name").notNull(),
+  passwordHash: text("password_hash").notNull(),
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+  mustChangePassword: integer("must_change_password", { mode: "boolean" }).notNull().default(true),
+  failedLoginAttempts: integer("failed_login_attempts").notNull().default(0),
+  lockedUntil: text("locked_until"),
+  lastLoginAt: text("last_login_at"),
+  passwordChangedAt: text("password_changed_at"),
+  ...timestamps,
+}, (table) => [index("users_email_active_idx").on(table.email, table.isActive)]);
+
+export const authSessions = sqliteTable("auth_sessions", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: text("expires_at").notNull(),
+  lastSeenAt: text("last_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("auth_sessions_user_idx").on(table.userId),
+  index("auth_sessions_expires_idx").on(table.expiresAt),
+]);
+
+export const platformAdmins = sqliteTable("platform_admins", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").references(() => users.id, { onDelete: "cascade" }),
+  email: text("email").notNull().unique(),
+  displayName: text("display_name").notNull(),
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+  ...timestamps,
+}, (table) => [
+  index("platform_admins_email_idx").on(table.email, table.isActive),
+  uniqueIndex("platform_admins_user_uq").on(table.userId),
+]);
+
 export const tenantMembers = sqliteTable("tenant_members", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
   email: text("email").notNull(),
   displayName: text("display_name").notNull(),
   role: text("role", { enum: ["owner", "admin", "staff"] }).notNull().default("staff"),
@@ -28,7 +75,26 @@ export const tenantMembers = sqliteTable("tenant_members", {
   ...timestamps,
 }, (table) => [
   uniqueIndex("tenant_members_tenant_email_uq").on(table.tenantId, table.email),
+  uniqueIndex("tenant_members_tenant_user_uq").on(table.tenantId, table.userId),
   index("tenant_members_email_idx").on(table.email),
+  index("tenant_members_user_idx").on(table.userId),
+]);
+
+export const professionals = sqliteTable("professionals", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  memberId: text("member_id").references(() => tenantMembers.id, { onDelete: "set null" }),
+  name: text("name").notNull(),
+  title: text("title").notNull().default("Profissional"),
+  bio: text("bio").notNull().default(""),
+  email: text("email").notNull().default(""),
+  color: text("color").notNull().default("#17624f"),
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("professionals_tenant_member_uq").on(table.tenantId, table.memberId),
+  index("professionals_tenant_active_idx").on(table.tenantId, table.isActive, table.sortOrder),
 ]);
 
 export const services = sqliteTable("services", {
@@ -46,9 +112,26 @@ export const services = sqliteTable("services", {
   ...timestamps,
 }, (table) => [index("services_tenant_active_idx").on(table.tenantId, table.isActive, table.sortOrder)]);
 
+export const professionalServices = sqliteTable("professional_services", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  professionalId: text("professional_id").notNull().references(() => professionals.id, { onDelete: "cascade" }),
+  serviceId: text("service_id").notNull().references(() => services.id, { onDelete: "cascade" }),
+  durationMinutes: integer("duration_minutes"),
+  bufferBeforeMinutes: integer("buffer_before_minutes"),
+  bufferAfterMinutes: integer("buffer_after_minutes"),
+  priceCents: integer("price_cents"),
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("professional_services_professional_service_uq").on(table.professionalId, table.serviceId),
+  index("professional_services_tenant_service_idx").on(table.tenantId, table.serviceId, table.isActive),
+]);
+
 export const availabilityRules = sqliteTable("availability_rules", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  professionalId: text("professional_id").references(() => professionals.id, { onDelete: "cascade" }),
   memberId: text("member_id").references(() => tenantMembers.id, { onDelete: "cascade" }),
   weekday: integer("weekday").notNull(),
   startTime: text("start_time").notNull(),
@@ -56,22 +139,30 @@ export const availabilityRules = sqliteTable("availability_rules", {
   slotIntervalMinutes: integer("slot_interval_minutes").notNull().default(30),
   isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
   ...timestamps,
-}, (table) => [index("availability_tenant_weekday_idx").on(table.tenantId, table.weekday, table.isActive)]);
+}, (table) => [
+  index("availability_tenant_weekday_idx").on(table.tenantId, table.weekday, table.isActive),
+  index("availability_professional_weekday_idx").on(table.professionalId, table.weekday, table.isActive),
+]);
 
 export const blockedPeriods = sqliteTable("blocked_periods", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  professionalId: text("professional_id").references(() => professionals.id, { onDelete: "cascade" }),
   memberId: text("member_id").references(() => tenantMembers.id, { onDelete: "cascade" }),
   startsAtUtc: text("starts_at_utc").notNull(),
   endsAtUtc: text("ends_at_utc").notNull(),
   reason: text("reason").notNull().default("Bloqueio manual"),
   ...timestamps,
-}, (table) => [index("blocked_periods_window_idx").on(table.tenantId, table.startsAtUtc, table.endsAtUtc)]);
+}, (table) => [
+  index("blocked_periods_window_idx").on(table.tenantId, table.startsAtUtc, table.endsAtUtc),
+  index("blocked_periods_professional_window_idx").on(table.professionalId, table.startsAtUtc, table.endsAtUtc),
+]);
 
 export const appointments = sqliteTable("appointments", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "restrict" }),
   serviceId: text("service_id").notNull().references(() => services.id, { onDelete: "restrict" }),
+  professionalId: text("professional_id").references(() => professionals.id, { onDelete: "restrict" }),
   memberId: text("member_id").references(() => tenantMembers.id, { onDelete: "set null" }),
   customerName: text("customer_name").notNull(),
   customerEmail: text("customer_email").notNull(),
@@ -79,6 +170,12 @@ export const appointments = sqliteTable("appointments", {
   customerNotes: text("customer_notes").notNull().default(""),
   startsAtUtc: text("starts_at_utc").notNull(),
   endsAtUtc: text("ends_at_utc").notNull(),
+  busyStartsAtUtc: text("busy_starts_at_utc"),
+  busyEndsAtUtc: text("busy_ends_at_utc"),
+  durationMinutes: integer("duration_minutes"),
+  bufferBeforeMinutes: integer("buffer_before_minutes").notNull().default(0),
+  bufferAfterMinutes: integer("buffer_after_minutes").notNull().default(0),
+  priceCents: integer("price_cents"),
   timezone: text("timezone").notNull(),
   status: text("status", { enum: ["pending", "confirmed", "cancelled", "completed", "no_show"] }).notNull().default("confirmed"),
   paymentPreference: text("payment_preference", { enum: ["online", "at_venue"] }).notNull().default("at_venue"),
@@ -90,6 +187,7 @@ export const appointments = sqliteTable("appointments", {
 }, (table) => [
   index("appointments_tenant_start_idx").on(table.tenantId, table.startsAtUtc),
   index("appointments_member_window_idx").on(table.memberId, table.startsAtUtc, table.endsAtUtc),
+  index("appointments_professional_window_idx").on(table.professionalId, table.busyStartsAtUtc, table.busyEndsAtUtc),
   index("appointments_customer_email_idx").on(table.tenantId, table.customerEmail),
 ]);
 
@@ -113,6 +211,7 @@ export const payments = sqliteTable("payments", {
 export const integrationConnections = sqliteTable("integration_connections", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  professionalId: text("professional_id").references(() => professionals.id, { onDelete: "cascade" }),
   provider: text("provider", { enum: ["google_calendar", "stripe", "email"] }).notNull(),
   status: text("status", { enum: ["connected", "disconnected", "error"] }).notNull().default("disconnected"),
   externalAccountId: text("external_account_id"),
@@ -120,11 +219,15 @@ export const integrationConnections = sqliteTable("integration_connections", {
   configurationJson: text("configuration_json").notNull().default("{}"),
   lastSyncedAt: text("last_synced_at"),
   ...timestamps,
-}, (table) => [uniqueIndex("integration_tenant_provider_uq").on(table.tenantId, table.provider)]);
+}, (table) => [
+  uniqueIndex("integration_tenant_provider_professional_uq").on(table.tenantId, table.provider, table.professionalId),
+  index("integration_professional_idx").on(table.professionalId, table.provider),
+]);
 
 export const oauthStates = sqliteTable("oauth_states", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  professionalId: text("professional_id").references(() => professionals.id, { onDelete: "cascade" }),
   provider: text("provider").notNull(),
   stateHash: text("state_hash").notNull().unique(),
   redirectUri: text("redirect_uri").notNull(),

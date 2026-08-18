@@ -13,6 +13,7 @@ type AppointmentView = {
   status: string;
   payment_status: string;
   service_name: string;
+  professional_name: string;
   tenant_name: string;
   tenant_slug: string;
 };
@@ -28,7 +29,7 @@ export default async function AppointmentPage({
   const payment = (await searchParams)?.payment;
   const d1 = await getD1();
   const appointment = await d1.prepare(
-    "SELECT a.customer_name, a.customer_email, a.starts_at_utc, a.timezone, a.status, a.payment_status, s.name AS service_name, t.name AS tenant_name, t.slug AS tenant_slug FROM appointments a JOIN services s ON s.id = a.service_id JOIN tenants t ON t.id = a.tenant_id WHERE a.public_token = ? LIMIT 1",
+    "SELECT a.customer_name, a.customer_email, a.starts_at_utc, a.timezone, a.status, a.payment_status, s.name AS service_name, p.name AS professional_name, t.name AS tenant_name, t.slug AS tenant_slug FROM appointments a JOIN services s ON s.id = a.service_id JOIN professionals p ON p.id = a.professional_id AND p.tenant_id = a.tenant_id JOIN tenants t ON t.id = a.tenant_id WHERE a.public_token = ? LIMIT 1",
   ).bind(token).first<AppointmentView>();
   if (!appointment) notFound();
 
@@ -54,6 +55,7 @@ export default async function AppointmentPage({
         <p className="confirmation-copy">Estes são os detalhes enviados para <strong>{appointment.customer_email}</strong>.</p>
         <dl className="confirmation-details">
           <div><dt>Atendimento</dt><dd>{appointment.service_name}</dd></div>
+          <div><dt>Profissional</dt><dd>{appointment.professional_name}</dd></div>
           <div><dt>Quando</dt><dd>{when}</dd></div>
           <div><dt>Pagamento</dt><dd>{paymentText}</dd></div>
         </dl>

@@ -36,13 +36,9 @@ yarn-error.log*
 
 # typescript
 next-env.d.ts
+*.tsbuildinfo
 /dist/
 /.wrangler/
 /.sites-runtime/
 /outputs/
 /work/
-
-# nested application dependencies and build artifacts
-/apps/*/node_modules/
-/apps/*/dist/
-/apps/api/.env

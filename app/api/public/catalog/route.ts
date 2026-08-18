@@ -1,58 +1,116 @@
-import { and, asc, eq } from "drizzle-orm";
-import { getDb } from "@/db";
-import { services, tenants } from "@/db/schema";
-import { jsonError } from "@/lib/http";
+import { getD1 } from "@/lib/d1";
+import { cleanText, jsonError } from "@/lib/http";
 import { correlationIdFor, isDatabaseUnavailable, problemDetails } from "@/lib/problem-details";
 
+type PublicProfessional = {
+  id: string;
+  name: string;
+  title: string;
+  bio: string;
+  color: string;
+  durationMinutes: number;
+  priceCents: number;
+};
+
 export async function GET(request: Request) {
-  const url = new URL(request.url);
-  const slug = url.searchParams.get("tenant") ?? "clinica-aurora";
   const correlationId = correlationIdFor(request);
-
   try {
-    const db = await getDb();
-    const tenant = await db.query.tenants.findFirst({ where: and(eq(tenants.slug, slug), eq(tenants.isActive, true)) });
-    if (!tenant) return jsonError("Empresa não encontrada.", 404, "TENANT_NOT_FOUND");
+  const slug = cleanText(new URL(request.url).searchParams.get("tenant"), 100) || "clinica-aurora";
+  const d1 = await getD1();
+  const tenant = await d1.prepare(`
+    SELECT id, slug, name, subtitle, timezone, currency, location
+    FROM tenants
+    WHERE slug = ? AND is_active = 1
+    LIMIT 1
+  `).bind(slug).first<{
+    id: string;
+    slug: string;
+    name: string;
+    subtitle: string;
+    timezone: string;
+    currency: string;
+    location: string;
+  }>();
+  if (!tenant) return jsonError("Empresa não encontrada.", 404, "TENANT_NOT_FOUND");
 
-    const catalog = await db.select({
-      id: services.id,
-      name: services.name,
-      description: services.description,
-      durationMinutes: services.durationMinutes,
-      priceCents: services.priceCents,
-      color: services.color,
-    }).from(services).where(and(eq(services.tenantId, tenant.id), eq(services.isActive, true))).orderBy(asc(services.sortOrder), asc(services.name));
+  const [servicesResult, linksResult] = await d1.batch([
+    d1.prepare(`
+      SELECT id, name, description, duration_minutes, price_cents, color
+      FROM services
+      WHERE tenant_id = ? AND is_active = 1
+      ORDER BY sort_order, name
+    `).bind(tenant.id),
+    d1.prepare(`
+      SELECT
+        link.service_id,
+        professional.id,
+        professional.name,
+        professional.title,
+        professional.bio,
+        professional.color,
+        COALESCE(link.duration_minutes, service.duration_minutes) AS duration_minutes,
+        COALESCE(link.price_cents, service.price_cents) AS price_cents
+      FROM professional_services AS link
+      INNER JOIN professionals AS professional
+        ON professional.id = link.professional_id
+       AND professional.tenant_id = link.tenant_id
+      INNER JOIN services AS service
+        ON service.id = link.service_id
+       AND service.tenant_id = link.tenant_id
+      WHERE link.tenant_id = ?
+        AND link.is_active = 1
+        AND professional.is_active = 1
+        AND service.is_active = 1
+      ORDER BY professional.sort_order, professional.name
+    `).bind(tenant.id),
+  ]);
 
-    return Response.json({
-      tenant: { slug: tenant.slug, name: tenant.name, subtitle: tenant.subtitle, timezone: tenant.timezone, currency: tenant.currency, location: tenant.location },
-      services: catalog,
-    }, { headers: { "x-correlation-id": correlationId } });
+  const links = linksResult.results as Array<Record<string, unknown>>;
+  const services = (servicesResult.results as Array<Record<string, unknown>>).map((service) => {
+    const professionals = links
+      .filter((link) => link.service_id === service.id)
+      .map((link): PublicProfessional => ({
+        id: String(link.id),
+        name: String(link.name),
+        title: String(link.title),
+        bio: String(link.bio ?? ""),
+        color: String(link.color),
+        durationMinutes: Number(link.duration_minutes),
+        priceCents: Number(link.price_cents),
+      }));
+    return {
+      id: String(service.id),
+      name: String(service.name),
+      description: String(service.description ?? ""),
+      durationMinutes: Number(service.duration_minutes),
+      priceCents: Number(service.price_cents),
+      color: String(service.color),
+      professionals,
+    };
+  }).filter((service) => service.professionals.length > 0);
+
+  return Response.json({
+    tenant: {
+      slug: tenant.slug,
+      name: tenant.name,
+      subtitle: tenant.subtitle,
+      timezone: tenant.timezone,
+      currency: tenant.currency,
+      location: tenant.location,
+    },
+    services,
+  });
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : "Unknown error";
-    console.error("Catalog request failed", {
-      correlationId,
-      tenantSlug: slug,
-      errorMessage,
-    });
-
     if (isDatabaseUnavailable(error)) {
       return problemDetails({
         status: 503,
-        title: "Service Unavailable",
-        detail: "Banco de dados local não está pronto. Confira o binding D1 `DB` e aplique as migrations locais.",
+        title: "Banco de dados indisponível",
+        detail: "O banco local ainda não está disponível ou as migrações não foram aplicadas.",
         code: "DATABASE_UNAVAILABLE",
-        instance: url.pathname,
+        instance: new URL(request.url).pathname,
         correlationId,
       });
     }
-
-    return problemDetails({
-      status: 500,
-      title: "Internal Server Error",
-      detail: "Não foi possível carregar o catálogo.",
-      code: "CATALOG_LOAD_FAILED",
-      instance: url.pathname,
-      correlationId,
-    });
+    throw error;
   }
 }

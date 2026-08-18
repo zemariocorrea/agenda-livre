@@ -6,6 +6,8 @@ import { formatInTimeZone } from "@/lib/timezone";
 
 type EventPayload = {
   appointmentId: string;
+  professionalId: string;
+  professionalName: string;
   serviceName: string;
   customerName: string;
   customerEmail: string;
@@ -47,14 +49,14 @@ export async function POST(request: Request) {
 
 async function syncCalendar(tenantId: string, payload: EventPayload) {
   const d1 = await getD1();
-  const connection = await d1.prepare("SELECT encrypted_credentials FROM integration_connections WHERE tenant_id = ? AND provider = 'google_calendar' AND status = 'connected' LIMIT 1")
-    .bind(tenantId).first<{ encrypted_credentials: string | null }>();
+  const connection = await d1.prepare("SELECT encrypted_credentials FROM integration_connections WHERE tenant_id = ? AND professional_id = ? AND provider = 'google_calendar' AND status = 'connected' LIMIT 1")
+    .bind(tenantId, payload.professionalId).first<{ encrypted_credentials: string | null }>();
   if (!connection?.encrypted_credentials) return;
   const credentials = await decryptSecret<{ refreshToken: string; calendarId?: string }>(connection.encrypted_credentials);
   const eventId = await createGoogleCalendarEvent(credentials, {
     appointmentId: payload.appointmentId,
     title: payload.serviceName,
-    description: `Agendamento de ${payload.customerName}`,
+    description: `Agendamento de ${payload.customerName} com ${payload.professionalName}`,
     location: payload.location,
     customerEmail: payload.customerEmail,
     startsAtUtc: payload.startsAtUtc,
@@ -70,7 +72,7 @@ async function syncCalendar(tenantId: string, payload: EventPayload) {
 
 function appointmentText(payload: EventPayload) {
   const when = formatInTimeZone(payload.startsAtUtc, payload.timezone, { dateStyle: "long", timeStyle: "short" });
-  return { when, text: `${payload.serviceName} em ${when}.` };
+  return { when, text: `${payload.serviceName} com ${payload.professionalName} em ${when}.` };
 }
 
 async function notifyCustomer(eventId: string, payload: EventPayload) {
@@ -81,7 +83,7 @@ async function notifyCustomer(eventId: string, payload: EventPayload) {
     to: payload.customerEmail,
     subject: `Agendamento confirmado · ${payload.serviceName}`,
     text: `Olá, ${payload.customerName}. Seu agendamento está confirmado: ${text}`,
-    html: `<h1>Horário confirmado</h1><p>Olá, ${escapeHtml(payload.customerName)}.</p><p><strong>${escapeHtml(payload.serviceName)}</strong><br>${escapeHtml(when)}</p>`,
+    html: `<h1>Horário confirmado</h1><p>Olá, ${escapeHtml(payload.customerName)}.</p><p><strong>${escapeHtml(payload.serviceName)}</strong><br>Profissional: ${escapeHtml(payload.professionalName)}<br>${escapeHtml(when)}</p>`,
   });
   if (!providerId) throw new Error("EMAIL_NOT_CONFIGURED");
   await d1.prepare("UPDATE notification_deliveries SET status = 'sent', provider_reference = ?, sent_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE appointment_id = ? AND channel = 'email' AND recipient = ?")
@@ -94,8 +96,8 @@ async function notifyAdmin(eventId: string, payload: EventPayload) {
     idempotencyKey: `outbox-${eventId}`,
     to: payload.adminEmail,
     subject: `Novo agendamento · ${payload.customerName}`,
-    text: `${payload.customerName} marcou ${payload.serviceName} para ${when}.`,
-    html: `<h1>Novo agendamento</h1><p><strong>${escapeHtml(payload.customerName)}</strong> marcou ${escapeHtml(payload.serviceName)}.</p><p>${escapeHtml(when)}</p>`,
+    text: `${payload.customerName} marcou ${payload.serviceName} com ${payload.professionalName} para ${when}.`,
+    html: `<h1>Novo agendamento</h1><p><strong>${escapeHtml(payload.customerName)}</strong> marcou ${escapeHtml(payload.serviceName)} com ${escapeHtml(payload.professionalName)}.</p><p>${escapeHtml(when)}</p>`,
   });
   if (!providerId) throw new Error("EMAIL_NOT_CONFIGURED");
 }

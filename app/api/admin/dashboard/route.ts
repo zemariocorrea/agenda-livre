@@ -17,18 +17,19 @@ export async function GET(request: Request) {
   const nextMonthKey = new Date(Date.UTC(local.year, local.month, 1, 12)).toISOString().slice(0, 10);
   const monthStart = parseLocalDateTime(monthStartKey, "00:00", access.tenant.timezone).toISOString();
   const nextMonthStart = parseLocalDateTime(nextMonthKey, "00:00", access.tenant.timezone).toISOString();
-  const [today, upcoming, revenue, recent, notifications, integrations] = await d1.batch([
+  const [today, upcoming, revenue, recent, notifications, integrations, professionals] = await d1.batch([
     d1.prepare("SELECT COUNT(*) AS total FROM appointments WHERE tenant_id = ? AND starts_at_utc >= ? AND starts_at_utc < ? AND status IN ('pending', 'confirmed')").bind(tenantId, todayStart, tomorrowStart),
     d1.prepare("SELECT COUNT(*) AS total FROM appointments WHERE tenant_id = ? AND starts_at_utc >= CURRENT_TIMESTAMP AND status IN ('pending', 'confirmed')").bind(tenantId),
     d1.prepare("SELECT COALESCE(SUM(amount_cents), 0) AS cents FROM payments WHERE tenant_id = ? AND status = 'paid' AND paid_at >= ? AND paid_at < ?").bind(tenantId, monthStart, nextMonthStart),
-    d1.prepare("SELECT a.id, a.customer_name, a.customer_email, a.starts_at_utc, a.status, a.payment_status, s.name AS service_name, s.duration_minutes FROM appointments a JOIN services s ON s.id = a.service_id WHERE a.tenant_id = ? AND a.starts_at_utc >= datetime('now', '-1 day') ORDER BY a.starts_at_utc LIMIT 12").bind(tenantId),
+    d1.prepare("SELECT a.id, a.customer_name, a.customer_email, a.starts_at_utc, a.status, a.payment_status, s.name AS service_name, COALESCE(a.duration_minutes, s.duration_minutes) AS duration_minutes, p.id AS professional_id, p.name AS professional_name, p.color AS professional_color FROM appointments a JOIN services s ON s.id = a.service_id JOIN professionals p ON p.id = a.professional_id AND p.tenant_id = a.tenant_id WHERE a.tenant_id = ? AND a.starts_at_utc >= datetime('now', '-1 day') ORDER BY a.starts_at_utc LIMIT 24").bind(tenantId),
     d1.prepare("SELECT COUNT(*) AS total FROM notification_deliveries WHERE tenant_id = ? AND status = 'pending'").bind(tenantId),
-    d1.prepare("SELECT provider, status, last_synced_at FROM integration_connections WHERE tenant_id = ? ORDER BY provider").bind(tenantId),
+    d1.prepare("SELECT connection.provider, connection.status, connection.last_synced_at, professional.id AS professional_id, professional.name AS professional_name FROM integration_connections AS connection LEFT JOIN professionals AS professional ON professional.id = connection.professional_id AND professional.tenant_id = connection.tenant_id WHERE connection.tenant_id = ? ORDER BY connection.provider, professional.sort_order, professional.name").bind(tenantId),
+    d1.prepare("SELECT COUNT(*) AS total FROM professionals WHERE tenant_id = ? AND is_active = 1").bind(tenantId),
   ]);
   return Response.json({
-    tenant: { slug: access.tenant.slug, name: access.tenant.name, timezone: access.tenant.timezone },
+    tenant: { slug: access.tenant.slug, name: access.tenant.name, timezone: access.tenant.timezone, plan: access.tenant.plan, maxProfessionals: access.tenant.maxProfessionals },
     user: { name: access.user.displayName, email: access.user.email, role: access.member.role },
-    metrics: { today: Number(today.results[0]?.total ?? 0), upcoming: Number(upcoming.results[0]?.total ?? 0), revenueCents: Number(revenue.results[0]?.cents ?? 0), pendingNotifications: Number(notifications.results[0]?.total ?? 0) },
+    metrics: { today: Number(today.results[0]?.total ?? 0), upcoming: Number(upcoming.results[0]?.total ?? 0), revenueCents: Number(revenue.results[0]?.cents ?? 0), pendingNotifications: Number(notifications.results[0]?.total ?? 0), professionals: Number(professionals.results[0]?.total ?? 0) },
     appointments: recent.results,
     integrations: integrations.results,
   });

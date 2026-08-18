@@ -14,15 +14,3 @@ test("catalog translates unavailable or unmigrated D1 into an explicit 503", asy
   assert.match(problemDetails, /no such table/);
 });
 
-test("new API starts isolated from the legacy Next.js application", async () => {
-  const apiPackage = JSON.parse(await readFile(new URL("../apps/api/package.json", import.meta.url), "utf8"));
-  const main = await readFile(new URL("../apps/api/src/main.ts", import.meta.url), "utf8");
-  const schema = await readFile(new URL("../apps/api/prisma/schema.prisma", import.meta.url), "utf8");
-
-  assert.equal(apiPackage.name, "@onboarding/api");
-  assert.match(main, /setGlobalPrefix\('api\/v1'\)/);
-  assert.match(schema, /provider = "postgresql"/);
-  assert.match(schema, /model Tenant/);
-  assert.match(schema, /model Session/);
-  assert.match(schema, /tokenHash String\s+@unique/);
-});

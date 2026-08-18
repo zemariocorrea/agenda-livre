@@ -32,7 +32,7 @@ test("renders development preview metadata", async () => {
   assert.match(await response.text(), developmentPreviewMeta);
 });
 
-test("renders the public booking experience and admin dashboard", async () => {
+test("renders public booking pages and protects administrative dashboards", async () => {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `routes-${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
@@ -45,9 +45,15 @@ test("renders the public booking experience and admin dashboard", async () => {
   assert.match(publicHtml, /Como podemos cuidar de você/);
   assert.match(publicHtml, /Pagamento opcional/);
 
-  const adminResponse = await worker.fetch(new Request("http://localhost/admin", { headers: { accept: "text/html", "oai-authenticated-user-email": "gestor@clinicaaurora.example" } }), environment, context);
-  assert.equal(adminResponse.status, 200);
-  const adminHtml = await adminResponse.text();
-  assert.match(adminHtml, /Carregando painel/);
-  assert.match(adminHtml, /Disponibilidade/);
+  const adminResponse = await worker.fetch(new Request("http://localhost/admin", { headers: { accept: "text/html" } }), environment, context);
+  assert.ok([302, 303, 307, 308].includes(adminResponse.status));
+  assert.match(adminResponse.headers.get("location") ?? "", /^\/login\?return_to=/);
+
+  const companySiteResponse = await worker.fetch(new Request("http://localhost/empresa/clinica-aurora", { headers: { accept: "text/html" } }), environment, context);
+  assert.equal(companySiteResponse.status, 200);
+  assert.match(await companySiteResponse.text(), /Área do gestor/);
+
+  const platformResponse = await worker.fetch(new Request("http://localhost/plataforma", { headers: { accept: "text/html" } }), environment, context);
+  assert.ok([302, 303, 307, 308].includes(platformResponse.status));
+  assert.match(platformResponse.headers.get("location") ?? "", /^\/login\?return_to=/);
 });

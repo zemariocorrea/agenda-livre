@@ -1,4 +1,4 @@
-import { findPrimaryMember, listAvailableSlots } from "@/lib/availability";
+import { listAvailableSlotsForService } from "@/lib/availability";
 import { getD1 } from "@/lib/d1";
 import { cleanText, jsonError } from "@/lib/http";
 import { addDaysToLocalDate, dateKeyInTimeZone } from "@/lib/timezone";
@@ -7,6 +7,7 @@ export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;
   const slug = cleanText(params.get("tenant"), 100) || "clinica-aurora";
   const serviceId = cleanText(params.get("serviceId"), 100);
+  const professionalId = cleanText(params.get("professionalId"), 100) || undefined;
   const date = cleanText(params.get("date"), 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !serviceId) return jsonError("Informe uma data e um serviço válidos.");
 
@@ -22,20 +23,27 @@ export async function GET(request: Request) {
   }
 
   const service = await d1.prepare(
-    "SELECT id, duration_minutes FROM services WHERE id = ? AND tenant_id = ? AND is_active = 1 LIMIT 1",
-  ).bind(serviceId, tenant.id).first<{ id: string; duration_minutes: number }>();
+    "SELECT id FROM services WHERE id = ? AND tenant_id = ? AND is_active = 1 LIMIT 1",
+  ).bind(serviceId, tenant.id).first<{ id: string }>();
   if (!service) return jsonError("Serviço não encontrado.", 404, "SERVICE_NOT_FOUND");
 
-  const member = await findPrimaryMember(d1, tenant.id);
-  if (!member) return Response.json({ date, timezone: tenant.timezone, slots: [] });
-
-  const slots = await listAvailableSlots(d1, {
+  const availability = await listAvailableSlotsForService(d1, {
     tenantId: tenant.id,
-    memberId: member.id,
+    serviceId: service.id,
+    professionalId,
     timezone: tenant.timezone,
     localDate: date,
-    service: { durationMinutes: service.duration_minutes },
   });
 
-  return Response.json({ date, memberId: member.id, timezone: tenant.timezone, slots });
+  if (professionalId && !availability.professionals.length) {
+    return jsonError("Profissional não atende esta atividade.", 404, "PROFESSIONAL_SERVICE_NOT_FOUND");
+  }
+
+  return Response.json({
+    date,
+    professionalId: professionalId ?? null,
+    timezone: tenant.timezone,
+    professionals: availability.professionals,
+    slots: availability.slots,
+  });
 }
