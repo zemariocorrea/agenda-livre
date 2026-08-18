@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { LogoutButton } from "./logout-button";
 import { TemporaryCredentials } from "./temporary-credentials";
 import { parseLocalDateTime, partsInZone } from "@/lib/timezone";
@@ -16,7 +16,28 @@ type Appointment = { id: string; customer_name: string; customer_email: string; 
 type Integration = { provider: string; status: string; last_synced_at: string | null; professional_id: string | null; professional_name: string | null; external_account_id?: string | null; configuration_json?: string | null };
 type AdminMember = { id: string; email: string; display_name: string; role: string; is_active: number };
 type AdminBlock = { id: string; professional_id: string | null; professional_name: string | null; starts_at_utc: string; ends_at_utc: string; reason: string };
-type CompanySettings = { id: string; slug: string; name: string; subtitle: string; timezone: string; location: string; contact_email: string; plan: string; max_professionals: number; brand_color: string; hero_title: string; hero_description: string };
+type CompanySettings = {
+  id: string;
+  slug: string;
+  name: string;
+  subtitle: string;
+  timezone: string;
+  location: string;
+  contact_email: string;
+  plan: string;
+  max_professionals: number;
+  brand_color: string;
+  secondary_color: string;
+  hero_title: string;
+  hero_description: string;
+  logo_url: string;
+  cover_image_url: string;
+  site_template: "modern" | "classic" | "direct";
+  promotion_enabled: number;
+  promotion_title: string;
+  promotion_description: string;
+  promotion_image_url: string;
+};
 type DashboardData = {
   tenant: { slug: string; name: string; timezone: string; plan: string; maxProfessionals: number };
   user: { name: string; email: string; role: string };
@@ -229,10 +250,53 @@ export function AdminDashboard({ tenantSlug = "clinica-aurora" }: { tenantSlug?:
   async function saveCompany(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
+    const payload = {
+      name: data.get("name"),
+      subtitle: data.get("subtitle"),
+      location: data.get("location"),
+      timezone: data.get("timezone"),
+      contactEmail: data.get("contactEmail"),
+      brandColor: data.get("brandColor"),
+      secondaryColor: data.get("secondaryColor"),
+      heroTitle: data.get("heroTitle"),
+      heroDescription: data.get("heroDescription"),
+      logoUrl: data.get("logoUrl"),
+      coverImageUrl: data.get("coverImageUrl"),
+      siteTemplate: data.get("siteTemplate"),
+      promotionEnabled: data.get("promotionEnabled") === "on",
+      promotionTitle: data.get("promotionTitle"),
+      promotionDescription: data.get("promotionDescription"),
+      promotionImageUrl: data.get("promotionImageUrl"),
+    };
+
     await performSave(async () => {
-      await apiJson(`/api/admin/company?${query}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: data.get("name"), subtitle: data.get("subtitle"), location: data.get("location"), timezone: data.get("timezone"), contactEmail: data.get("contactEmail"), brandColor: data.get("brandColor"), heroTitle: data.get("heroTitle"), heroDescription: data.get("heroDescription") }) });
-      setCompany((current) => current ? { ...current, name: String(data.get("name")), subtitle: String(data.get("subtitle")), location: String(data.get("location")), timezone: String(data.get("timezone")), contact_email: String(data.get("contactEmail")), brand_color: String(data.get("brandColor")), hero_title: String(data.get("heroTitle")), hero_description: String(data.get("heroDescription")) } : current);
-      setMessage("Dados da empresa e do site atualizados.");
+      await apiJson(`/api/admin/company?${query}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      setCompany((current) => current ? {
+        ...current,
+        name: String(payload.name ?? ""),
+        subtitle: String(payload.subtitle ?? ""),
+        location: String(payload.location ?? ""),
+        timezone: String(payload.timezone ?? ""),
+        contact_email: String(payload.contactEmail ?? ""),
+        brand_color: String(payload.brandColor ?? "#17624f"),
+        secondary_color: String(payload.secondaryColor ?? "#f2ac72"),
+        hero_title: String(payload.heroTitle ?? ""),
+        hero_description: String(payload.heroDescription ?? ""),
+        logo_url: String(payload.logoUrl ?? ""),
+        cover_image_url: String(payload.coverImageUrl ?? ""),
+        site_template: String(payload.siteTemplate ?? "modern") as CompanySettings["site_template"],
+        promotion_enabled: payload.promotionEnabled ? 1 : 0,
+        promotion_title: String(payload.promotionTitle ?? ""),
+        promotion_description: String(payload.promotionDescription ?? ""),
+        promotion_image_url: String(payload.promotionImageUrl ?? ""),
+      } : current);
+
+      setMessage("Identidade e conteúdo do site atualizados.");
     }, "Não foi possível salvar a empresa.");
   }
 
@@ -269,7 +333,7 @@ export function AdminDashboard({ tenantSlug = "clinica-aurora" }: { tenantSlug?:
       {!loading && view === "availability" && <Availability professionals={professionals} selectedId={selectedProfessionalId} rules={rules} saving={saving} onSelect={(id) => { setSelectedProfessionalId(id); setRules(rulesFor(rawRules, id)); }} onChange={(weekday, patch) => setRules((items) => items.map((rule) => rule.weekday === weekday ? { ...rule, ...patch } : rule))} onSave={saveAvailability} />}
       {!loading && view === "blocks" && <Blocks blocks={blocks} timezone={dashboard?.tenant.timezone ?? "America/Sao_Paulo"} onAdd={() => { setEditingBlock(null); setModal("block"); }} onEdit={(block) => { setEditingBlock(block); setModal("block"); }} onDelete={deleteBlock} />}
       {!loading && view === "integrations" && <Integrations tenantSlug={tenantSlug} professionals={professionals} integrations={dashboard?.integrations ?? []} pending={dashboard?.metrics.pendingNotifications ?? 0} />}
-      {!loading && view === "company" && <CompanySettingsView company={company} saving={saving} onSave={saveCompany} />}
+      {!loading && view === "company" && <CompanySettingsView company={company} saving={saving} tenantSlug={tenantSlug} onSave={saveCompany} />}
     </section>
     {temporaryAccess && <TemporaryCredentials credentials={temporaryAccess} title="Acesso administrativo criado" onClose={() => setTemporaryAccess(null)} />}
     {modal === "service" && <Modal onClose={() => { setModal(null); setEditingService(null); }}><form className="service-modal" onSubmit={addService}><ModalHead eyebrow="Catálogo" title={editingService ? "Editar atividade" : "Nova atividade"} onClose={() => { setModal(null); setEditingService(null); }} /><label>Nome da atividade<input name="name" required maxLength={120} placeholder="Ex.: Consulta nutricional" defaultValue={editingService?.name} /></label><label>Descrição<textarea name="description" maxLength={500} placeholder="Explique brevemente o atendimento" defaultValue={editingService?.description} /></label><div className="modal-grid"><label>Duração<select name="duration" defaultValue={String(editingService?.duration ?? 60)}><option value="30">30 minutos</option><option value="45">45 minutos</option><option value="60">60 minutos</option><option value="90">90 minutos</option></select></label><label>Preço (R$)<input name="price" min="0" step="0.01" type="number" defaultValue={(editingService?.priceCents ?? 15000) / 100} /></label></div><label>Cor<input className="color-input" name="color" type="color" defaultValue={editingService?.color ?? "#567f72"} /></label><CheckboxGroup name="professionalIds" title="Profissionais que atendem" selectedIds={editingService?.professionalIds} items={professionals.filter((item) => item.active).map((item) => ({ id: item.id, label: item.name }))} /><ModalActions saving={saving} label="Salvar atividade" onClose={() => { setModal(null); setEditingService(null); }} /></form></Modal>}
@@ -307,9 +371,288 @@ function Blocks({ blocks, timezone, onAdd, onEdit, onDelete }: { blocks: AdminBl
   return <div className="admin-content"><div className="section-intro"><div><h2>Exceções de agenda</h2><p>Bloqueie toda a empresa ou apenas uma agenda profissional.</p></div><span>{blocks.length} bloqueios</span></div><section className="panel block-list">{blocks.length ? blocks.map((block) => <article key={block.id}><span className={block.professional_id ? "individual" : "global"}>{block.professional_id ? "Individual" : "Global"}</span><div><strong>{block.reason}</strong><p>{block.professional_name ?? "Todos os profissionais"}</p></div><time>{format(block.starts_at_utc)}<small>até {format(block.ends_at_utc)}</small></time><div className="block-actions"><button onClick={() => onEdit(block)} type="button">Editar</button><button aria-label={`Remover ${block.reason}`} onClick={() => onDelete(block.id)} type="button">Remover</button></div></article>) : <div className="empty-action"><p>Nenhum bloqueio cadastrado.</p><button className="admin-primary" onClick={onAdd} type="button">Criar primeiro bloqueio</button></div>}</section></div>;
 }
 
-function CompanySettingsView({ company, saving, onSave }: { company: CompanySettings | null; saving: boolean; onSave: (event: FormEvent<HTMLFormElement>) => void }) {
+function CompanySettingsView({
+  company,
+  saving,
+  tenantSlug,
+  onSave,
+}: {
+  company: CompanySettings | null;
+  saving: boolean;
+  tenantSlug: string;
+  onSave: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  const initialCompany = company ?? {
+    id: "",
+    slug: tenantSlug,
+    name: "",
+    subtitle: "",
+    timezone: "America/Sao_Paulo",
+    location: "",
+    contact_email: "",
+    plan: "essential",
+    max_professionals: 0,
+    brand_color: "#17624f",
+    secondary_color: "#f2ac72",
+    hero_title: "",
+    hero_description: "",
+    logo_url: "",
+    cover_image_url: "",
+    site_template: "modern" as const,
+    promotion_enabled: 0,
+    promotion_title: "",
+    promotion_description: "",
+    promotion_image_url: "",
+  };
+
+  const [draft, setDraft] = useState(() => ({
+    name: initialCompany.name,
+    subtitle: initialCompany.subtitle,
+    location: initialCompany.location,
+    timezone: initialCompany.timezone,
+    contactEmail: initialCompany.contact_email,
+    brandColor: initialCompany.brand_color || "#17624f",
+    secondaryColor: initialCompany.secondary_color || "#f2ac72",
+    heroTitle: initialCompany.hero_title,
+    heroDescription: initialCompany.hero_description,
+    logoUrl: initialCompany.logo_url || "",
+    coverImageUrl: initialCompany.cover_image_url || "",
+    siteTemplate: initialCompany.site_template || "modern",
+    promotionEnabled: Boolean(initialCompany.promotion_enabled),
+    promotionTitle: initialCompany.promotion_title || "",
+    promotionDescription: initialCompany.promotion_description || "",
+    promotionImageUrl: initialCompany.promotion_image_url || "",
+  }));
+  const [uploading, setUploading] = useState<"logo" | "cover" | "promotion" | null>(null);
+  const [uploadError, setUploadError] = useState("");
+
   if (!company) return <div className="admin-content"><section className="panel"><p className="empty-state">Empresa não encontrada.</p></section></div>;
-  return <div className="admin-content"><div className="section-intro"><div><h2>Identidade e página pública</h2><p>O Admin Master controla plano e slug; a empresa controla sua apresentação.</p></div><span>Plano {planName(company.plan)}</span></div><form className="panel company-admin-form" key={company.id} onSubmit={onSave}><div className="company-admin-preview" style={{ borderColor: company.brand_color }}><i style={{ background: company.brand_color }}>{company.name.slice(0, 1)}</i><div><strong>{company.name}</strong><small>/empresa/{company.slug} · até {company.max_professionals} profissionais</small></div></div><div className="modal-grid"><label>Nome da empresa<input name="name" required defaultValue={company.name} /></label><label>E-mail de contato<input name="contactEmail" type="email" defaultValue={company.contact_email} /></label></div><div className="modal-grid"><label>Subtítulo<input name="subtitle" defaultValue={company.subtitle} /></label><label>Localização<input name="location" defaultValue={company.location} /></label></div><div className="modal-grid"><label>Fuso horário<input name="timezone" required defaultValue={company.timezone} /></label><label>Cor da marca<input className="color-input" name="brandColor" type="color" defaultValue={company.brand_color} /></label></div><label>Título principal do site<input name="heroTitle" maxLength={220} defaultValue={company.hero_title} /></label><label>Descrição do site<textarea name="heroDescription" maxLength={500} defaultValue={company.hero_description} /></label><div className="modal-actions"><button className="admin-primary" disabled={saving} type="submit">{saving ? "Salvando..." : "Salvar empresa e site"}</button></div></form></div>;
+
+  const previewStyle = {
+    "--site-primary": draft.brandColor,
+    "--site-secondary": draft.secondaryColor,
+  } as CSSProperties;
+
+  async function uploadImage(kind: "logo" | "cover" | "promotion", file?: File) {
+    if (!file) return;
+    setUploading(kind);
+    setUploadError("");
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("kind", kind);
+      const result = await apiJson<{ url: string }>(`/api/admin/site-assets?tenant=${encodeURIComponent(tenantSlug)}`, {
+        method: "POST",
+        body: form,
+      });
+      if (kind === "logo") setDraft((current) => ({ ...current, logoUrl: result.url }));
+      if (kind === "cover") setDraft((current) => ({ ...current, coverImageUrl: result.url }));
+      if (kind === "promotion") setDraft((current) => ({ ...current, promotionImageUrl: result.url }));
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : "Não foi possível enviar a imagem.");
+    } finally {
+      setUploading(null);
+    }
+  }
+
+  return <div className="admin-content site-settings-view">
+    <div className="section-intro">
+      <div>
+        <h2>Identidade e página pública</h2>
+        <p>Personalize a propaganda sem alterar código. Serviços, profissionais e horários continuam vindo do sistema.</p>
+      </div>
+      <span>Plano {planName(company.plan)}</span>
+    </div>
+
+    <div className="site-editor-layout">
+      <form className="panel company-admin-form site-editor-form" onSubmit={onSave}>
+        <section className="site-editor-section">
+          <div className="site-editor-section-head">
+            <div><strong>Identidade</strong><small>Marca, cores e modelo visual</small></div>
+          </div>
+
+          <div className="modal-grid">
+            <label>Nome da empresa
+              <input name="name" required value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} />
+            </label>
+            <label>E-mail de contato
+              <input name="contactEmail" type="email" value={draft.contactEmail} onChange={(event) => setDraft((current) => ({ ...current, contactEmail: event.target.value }))} />
+            </label>
+          </div>
+
+          <div className="modal-grid">
+            <label>Subtítulo
+              <input name="subtitle" value={draft.subtitle} onChange={(event) => setDraft((current) => ({ ...current, subtitle: event.target.value }))} />
+            </label>
+            <label>Localização
+              <input name="location" value={draft.location} onChange={(event) => setDraft((current) => ({ ...current, location: event.target.value }))} />
+            </label>
+          </div>
+
+          <div className="modal-grid">
+            <label>Fuso horário
+              <input name="timezone" required value={draft.timezone} onChange={(event) => setDraft((current) => ({ ...current, timezone: event.target.value }))} />
+            </label>
+            <label>Modelo do site
+              <select name="siteTemplate" value={draft.siteTemplate} onChange={(event) => setDraft((current) => ({ ...current, siteTemplate: event.target.value as CompanySettings["site_template"] }))}>
+                <option value="modern">Moderno</option>
+                <option value="classic">Clássico</option>
+                <option value="direct">Direto</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="site-color-row">
+            <label>Cor principal
+              <input className="color-input" name="brandColor" type="color" value={draft.brandColor} onChange={(event) => setDraft((current) => ({ ...current, brandColor: event.target.value }))} />
+            </label>
+            <label>Cor de destaque
+              <input className="color-input" name="secondaryColor" type="color" value={draft.secondaryColor} onChange={(event) => setDraft((current) => ({ ...current, secondaryColor: event.target.value }))} />
+            </label>
+          </div>
+        </section>
+
+        <section className="site-editor-section">
+          <div className="site-editor-section-head">
+            <div><strong>Imagens</strong><small>PNG, JPG ou WEBP. Logo até 2 MB; demais até 5 MB.</small></div>
+          </div>
+
+          <SiteImageField
+            label="Logo da empresa"
+            value={draft.logoUrl}
+            busy={uploading === "logo"}
+            onUpload={(file) => uploadImage("logo", file)}
+            onRemove={() => setDraft((current) => ({ ...current, logoUrl: "" }))}
+          />
+          <input name="logoUrl" type="hidden" value={draft.logoUrl} />
+
+          <SiteImageField
+            label="Imagem de capa"
+            value={draft.coverImageUrl}
+            busy={uploading === "cover"}
+            onUpload={(file) => uploadImage("cover", file)}
+            onRemove={() => setDraft((current) => ({ ...current, coverImageUrl: "" }))}
+          />
+          <input name="coverImageUrl" type="hidden" value={draft.coverImageUrl} />
+        </section>
+
+        <section className="site-editor-section">
+          <div className="site-editor-section-head">
+            <div><strong>Apresentação</strong><small>Texto principal exibido antes do agendamento</small></div>
+          </div>
+
+          <label>Título principal do site
+            <input name="heroTitle" maxLength={220} value={draft.heroTitle} onChange={(event) => setDraft((current) => ({ ...current, heroTitle: event.target.value }))} />
+          </label>
+          <label>Descrição do site
+            <textarea name="heroDescription" maxLength={500} value={draft.heroDescription} onChange={(event) => setDraft((current) => ({ ...current, heroDescription: event.target.value }))} />
+          </label>
+        </section>
+
+        <section className="site-editor-section">
+          <div className="site-editor-section-head">
+            <div><strong>Divulgação</strong><small>Banner promocional opcional no site público</small></div>
+            <label className="switch site-promotion-switch">
+              <input name="promotionEnabled" checked={draft.promotionEnabled} onChange={(event) => setDraft((current) => ({ ...current, promotionEnabled: event.target.checked }))} type="checkbox" />
+              <b />
+            </label>
+          </div>
+
+          {draft.promotionEnabled && <>
+            <label>Título da promoção
+              <input name="promotionTitle" maxLength={160} value={draft.promotionTitle} onChange={(event) => setDraft((current) => ({ ...current, promotionTitle: event.target.value }))} placeholder="Ex.: Combo especial deste mês" />
+            </label>
+            <label>Descrição da promoção
+              <textarea name="promotionDescription" maxLength={400} value={draft.promotionDescription} onChange={(event) => setDraft((current) => ({ ...current, promotionDescription: event.target.value }))} placeholder="Explique a condição ou destaque da campanha." />
+            </label>
+            <SiteImageField
+              label="Imagem da promoção"
+              value={draft.promotionImageUrl}
+              busy={uploading === "promotion"}
+              onUpload={(file) => uploadImage("promotion", file)}
+              onRemove={() => setDraft((current) => ({ ...current, promotionImageUrl: "" }))}
+            />
+          </>}
+          {!draft.promotionEnabled && <>
+            <input name="promotionTitle" type="hidden" value={draft.promotionTitle} />
+            <input name="promotionDescription" type="hidden" value={draft.promotionDescription} />
+          </>}
+          <input name="promotionImageUrl" type="hidden" value={draft.promotionImageUrl} />
+        </section>
+
+        {uploadError && <p className="form-error site-upload-error">{uploadError}</p>}
+
+        <div className="modal-actions site-save-actions">
+          <span>/empresa/{company.slug}</span>
+          <button className="admin-primary" disabled={saving || Boolean(uploading)} type="submit">
+            {saving ? "Salvando..." : uploading ? "Enviando imagem..." : "Salvar site"}
+          </button>
+        </div>
+      </form>
+
+      <aside className="site-preview-column">
+        <div className="site-preview-label"><strong>Pré-visualização</strong><small>Atualiza enquanto você edita</small></div>
+        <div className={`site-live-preview template-${draft.siteTemplate}`} style={previewStyle}>
+          <header>
+            <div className="site-live-brand">
+              {draft.logoUrl ? <img src={draft.logoUrl} alt="" /> : <span>{draft.name.slice(0, 1).toUpperCase() || "A"}</span>}
+              <div><strong>{draft.name || "Sua empresa"}</strong><small>{draft.subtitle || "Seu subtítulo"}</small></div>
+            </div>
+            <small>{draft.location || "Sua localização"}</small>
+          </header>
+
+          {draft.coverImageUrl && <div className="site-live-cover"><img src={draft.coverImageUrl} alt="" /></div>}
+
+          <section className="site-live-hero">
+            <p>Agendamento online</p>
+            <h3>{draft.heroTitle || "Seu título principal"}</h3>
+            <span>{draft.heroDescription || "Sua descrição aparecerá aqui."}</span>
+            <button type="button">Agendar horário</button>
+          </section>
+
+          {draft.promotionEnabled && <section className="site-live-promotion">
+            {draft.promotionImageUrl && <img src={draft.promotionImageUrl} alt="" />}
+            <div>
+              <small>Destaque</small>
+              <strong>{draft.promotionTitle || "Sua promoção"}</strong>
+              <p>{draft.promotionDescription || "Use este espaço para divulgar uma campanha."}</p>
+            </div>
+          </section>}
+        </div>
+      </aside>
+    </div>
+  </div>;
+}
+
+function SiteImageField({
+  label,
+  value,
+  busy,
+  onUpload,
+  onRemove,
+}: {
+  label: string;
+  value: string;
+  busy: boolean;
+  onUpload: (file?: File) => void;
+  onRemove: () => void;
+}) {
+  return <div className="site-image-field">
+    <div className="site-image-thumb">
+      {value ? <img src={value} alt="" /> : <span>Imagem</span>}
+    </div>
+    <div>
+      <strong>{label}</strong>
+      <small>{value ? "Imagem configurada" : "Nenhuma imagem enviada"}</small>
+      <div className="site-image-actions">
+        <label className="admin-soft">
+          {busy ? "Enviando..." : value ? "Trocar imagem" : "Enviar imagem"}
+          <input accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={(event) => onUpload(event.target.files?.[0])} type="file" />
+        </label>
+        {value && <button className="admin-ghost" onClick={onRemove} type="button">Remover</button>}
+      </div>
+    </div>
+  </div>;
 }
 
 function Professionals({ professionals, services, onToggle, onEdit, onAdd }: { professionals: AdminProfessional[]; services: AdminService[]; onToggle: (id: string) => void; onEdit: (professional: AdminProfessional) => void; onAdd: () => void }) {

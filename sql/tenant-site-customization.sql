@@ -1,0 +1,8 @@
+ALTER TABLE tenants ADD COLUMN secondary_color TEXT NOT NULL DEFAULT '#f2ac72';
+ALTER TABLE tenants ADD COLUMN logo_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE tenants ADD COLUMN cover_image_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE tenants ADD COLUMN site_template TEXT NOT NULL DEFAULT 'modern';
+ALTER TABLE tenants ADD COLUMN promotion_enabled INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tenants ADD COLUMN promotion_title TEXT NOT NULL DEFAULT '';
+ALTER TABLE tenants ADD COLUMN promotion_description TEXT NOT NULL DEFAULT '';
+ALTER TABLE tenants ADD COLUMN promotion_image_url TEXT NOT NULL DEFAULT '';

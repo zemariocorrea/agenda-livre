@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "e967198c-2d7c-4fbd-89bf-9440fc210a6f",
-  "prevId": "40950d5b-2444-4f13-a89b-e81fde75bcc0",
+  "id": "041b0a31-ecf7-4839-9b34-2d203430b5bf",
+  "prevId": "e967198c-2d7c-4fbd-89bf-9440fc210a6f",
   "tables": {
     "appointments": {
       "name": "appointments",
@@ -378,6 +378,96 @@
           "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "auth_sessions": {
+      "name": "auth_sessions",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "CURRENT_TIMESTAMP"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "CURRENT_TIMESTAMP"
+        }
+      },
+      "indexes": {
+        "auth_sessions_token_hash_unique": {
+          "name": "auth_sessions_token_hash_unique",
+          "columns": [
+            "token_hash"
+          ],
+          "isUnique": true
+        },
+        "auth_sessions_user_idx": {
+          "name": "auth_sessions_user_idx",
+          "columns": [
+            "user_id"
+          ],
+          "isUnique": false
+        },
+        "auth_sessions_expires_idx": {
+          "name": "auth_sessions_expires_idx",
+          "columns": [
+            "expires_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "auth_sessions_user_id_users_id_fk": {
+          "name": "auth_sessions_user_id_users_id_fk",
+          "tableFrom": "auth_sessions",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
           ],
           "columnsTo": [
             "id"
@@ -1052,13 +1142,6 @@
           "notNull": false,
           "autoincrement": false
         },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "provider": {
           "name": "provider",
           "type": "text",
@@ -1119,15 +1202,6 @@
             "expires_at"
           ],
           "isUnique": false
-        },
-        "oauth_states_user_idx": {
-          "name": "oauth_states_user_idx",
-          "columns": [
-            "user_id",
-            "provider",
-            "expires_at"
-          ],
-          "isUnique": false
         }
       },
       "foreignKeys": {
@@ -1150,19 +1224,6 @@
           "tableTo": "professionals",
           "columnsFrom": [
             "professional_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "oauth_states_user_id_users_id_fk": {
-          "name": "oauth_states_user_id_users_id_fk",
-          "tableFrom": "oauth_states",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
           ],
           "columnsTo": [
             "id"
@@ -1457,6 +1518,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "email": {
           "name": "email",
           "type": "text",
@@ -1494,13 +1562,6 @@
           "notNull": true,
           "autoincrement": false,
           "default": "CURRENT_TIMESTAMP"
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
         }
       },
       "indexes": {
@@ -1992,6 +2053,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "email": {
           "name": "email",
           "type": "text",
@@ -2037,13 +2105,6 @@
           "notNull": true,
           "autoincrement": false,
           "default": "CURRENT_TIMESTAMP"
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
         }
       },
       "indexes": {
@@ -2055,13 +2116,6 @@
           ],
           "isUnique": true
         },
-        "tenant_members_email_idx": {
-          "name": "tenant_members_email_idx",
-          "columns": [
-            "email"
-          ],
-          "isUnique": false
-        },
         "tenant_members_tenant_user_uq": {
           "name": "tenant_members_tenant_user_uq",
           "columns": [
@@ -2069,6 +2123,13 @@
             "user_id"
           ],
           "isUnique": true
+        },
+        "tenant_members_email_idx": {
+          "name": "tenant_members_email_idx",
+          "columns": [
+            "email"
+          ],
+          "isUnique": false
         },
         "tenant_members_user_idx": {
           "name": "tenant_members_user_idx",
@@ -2198,6 +2259,14 @@
           "autoincrement": false,
           "default": "'#17624f'"
         },
+        "secondary_color": {
+          "name": "secondary_color",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'#f2ac72'"
+        },
         "hero_title": {
           "name": "hero_title",
           "type": "text",
@@ -2213,6 +2282,62 @@
           "notNull": true,
           "autoincrement": false,
           "default": "'Escolha o atendimento, encontre o melhor horário e confirme em poucos passos.'"
+        },
+        "logo_url": {
+          "name": "logo_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "''"
+        },
+        "cover_image_url": {
+          "name": "cover_image_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "''"
+        },
+        "site_template": {
+          "name": "site_template",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'modern'"
+        },
+        "promotion_enabled": {
+          "name": "promotion_enabled",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "promotion_title": {
+          "name": "promotion_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "''"
+        },
+        "promotion_description": {
+          "name": "promotion_description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "''"
+        },
+        "promotion_image_url": {
+          "name": "promotion_image_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "''"
         },
         "custom_domain": {
           "name": "custom_domain",
@@ -2371,96 +2496,6 @@
         }
       },
       "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "auth_sessions": {
-      "name": "auth_sessions",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "token_hash": {
-          "name": "token_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "last_seen_at": {
-          "name": "last_seen_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "CURRENT_TIMESTAMP"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "CURRENT_TIMESTAMP"
-        }
-      },
-      "indexes": {
-        "auth_sessions_token_hash_unique": {
-          "name": "auth_sessions_token_hash_unique",
-          "columns": [
-            "token_hash"
-          ],
-          "isUnique": true
-        },
-        "auth_sessions_user_idx": {
-          "name": "auth_sessions_user_idx",
-          "columns": [
-            "user_id"
-          ],
-          "isUnique": false
-        },
-        "auth_sessions_expires_idx": {
-          "name": "auth_sessions_expires_idx",
-          "columns": [
-            "expires_at"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "auth_sessions_user_id_users_id_fk": {
-          "name": "auth_sessions_user_id_users_id_fk",
-          "tableFrom": "auth_sessions",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
