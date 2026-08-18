@@ -13,7 +13,7 @@ type RawRule = { professional_id: string; weekday: number; start_time: string; e
 type AdminService = { id: string; name: string; description: string; duration: number; priceCents: number; active: boolean; color: string; professionalIds: string[] };
 type AdminProfessional = { id: string; name: string; title: string; bio: string; email: string; color: string; active: boolean; serviceIds: string[]; googleStatus: string | null };
 type Appointment = { id: string; customer_name: string; customer_email: string; customer_phone: string; starts_at_utc: string; ends_at_utc?: string; status: string; payment_status: string; service_name: string; duration_minutes?: number; professional_id: string; professional_name: string; professional_color: string };
-type Integration = { provider: string; status: string; last_synced_at: string | null; professional_id: string | null; professional_name: string | null };
+type Integration = { provider: string; status: string; last_synced_at: string | null; professional_id: string | null; professional_name: string | null; external_account_id?: string | null; configuration_json?: string | null };
 type AdminMember = { id: string; email: string; display_name: string; role: string; is_active: number };
 type AdminBlock = { id: string; professional_id: string | null; professional_name: string | null; starts_at_utc: string; ends_at_utc: string; reason: string };
 type CompanySettings = { id: string; slug: string; name: string; subtitle: string; timezone: string; location: string; contact_email: string; plan: string; max_professionals: number; brand_color: string; hero_title: string; hero_description: string };
@@ -325,7 +325,82 @@ function Availability({ professionals, selectedId, rules, saving, onSelect, onCh
 }
 
 function Integrations({ tenantSlug, professionals, integrations, pending }: { tenantSlug: string; professionals: AdminProfessional[]; integrations: Integration[]; pending: number }) {
-  return <div className="admin-content integrations-view"><div className="section-intro"><div><h2>Google Agenda por profissional</h2><p>Cada pessoa conecta a própria conta; a sincronização ocorre pela outbox.</p></div></div><section className="integration-grid professional-integrations">{professionals.map((professional) => { const connection = integrations.find((item) => item.provider === "google_calendar" && item.professional_id === professional.id); const connected = connection?.status === "connected"; return <article className={`integration-card ${connected ? "connected" : ""}`} key={professional.id}><div className="integration-logo google">31</div><div><span className={`status-dot ${connected ? "" : "muted"}`}>{connected ? "Conectado" : "Configurar"}</span><h3>{professional.name}</h3><p>{professional.title} · agenda exclusiva</p></div><Link href={`/api/admin/integrations/google/start?tenant=${encodeURIComponent(tenantSlug)}&professionalId=${encodeURIComponent(professional.id)}`}>{connected ? "Reconectar" : "Conectar"}</Link></article>; })}<article className="integration-card"><div className="integration-logo stripe">S</div><div><span className="status-dot muted">Empresa</span><h3>Pagamentos opcionais</h3><p>Stripe Checkout pode ser habilitado por ambiente.</p></div></article><article className="integration-card"><div className="integration-logo email">@</div><div><span className="status-dot muted">Assíncrono</span><h3>E-mails transacionais</h3><p>Confirmações para cliente, empresa e profissional.</p></div></article></section><section className="panel async-health"><div><span className="pulse" /><div><strong>Transactional Outbox</strong><p>{pending ? `${pending} entrega(s) aguardando processamento.` : "Nenhum evento pendente no painel."}</p></div></div></section></div>;
+  const tenantConnection = integrations.find((item) => item.provider === "google_calendar" && item.professional_id === null);
+  return <div className="admin-content integrations-view">
+    <div className="section-intro"><div><h2>Google Agenda</h2><p>Conecte uma agenda padrão da empresa e, quando necessário, substitua por uma agenda exclusiva de cada profissional.</p></div></div>
+    <section className="integration-grid professional-integrations">
+      <GoogleCalendarConnection tenantSlug={tenantSlug} title="Agenda padrão da empresa" subtitle="Fallback para profissionais sem agenda própria" connection={tenantConnection} />
+      {professionals.map((professional) => {
+        const connection = integrations.find((item) => item.provider === "google_calendar" && item.professional_id === professional.id);
+        return <GoogleCalendarConnection key={professional.id} tenantSlug={tenantSlug} professionalId={professional.id} title={professional.name} subtitle={`${professional.title} · agenda exclusiva`} connection={connection} />;
+      })}
+      <article className="integration-card"><div className="integration-logo stripe">S</div><div><span className="status-dot muted">Empresa</span><h3>Pagamentos opcionais</h3><p>Stripe Checkout pode ser habilitado por ambiente.</p></div></article>
+      <article className="integration-card"><div className="integration-logo email">@</div><div><span className="status-dot muted">Assíncrono</span><h3>E-mails transacionais</h3><p>Confirmações para cliente, empresa e profissional.</p></div></article>
+    </section>
+    <section className="panel async-health"><div><span className="pulse" /><div><strong>Transactional Outbox</strong><p>{pending ? `${pending} entrega(s) aguardando processamento.` : "Nenhum evento pendente no painel."}</p></div></div></section>
+  </div>;
+}
+
+function GoogleCalendarConnection({ tenantSlug, professionalId, title, subtitle, connection }: { tenantSlug: string; professionalId?: string; title: string; subtitle: string; connection?: Integration }) {
+  const connected = connection?.status === "connected";
+  const configuration = parseIntegrationConfiguration(connection?.configuration_json);
+  const [calendarOptions, setCalendarOptions] = useState<Array<{ id: string; summary: string; primary: boolean }>>([]);
+  const [selectedCalendarId, setSelectedCalendarId] = useState(configuration.calendarId ?? "");
+  const [showCalendars, setShowCalendars] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const targetQuery = professionalId ? `&professionalId=${encodeURIComponent(professionalId)}` : "";
+  const connectUrl = `/api/admin/integrations/google/start?tenant=${encodeURIComponent(tenantSlug)}${targetQuery}`;
+
+  async function loadCalendars() {
+    setBusy(true); setError("");
+    try {
+      const result = await apiJson<{ calendars: Array<{ id: string; summary: string; primary: boolean }>; selectedCalendarId: string }>(`/api/admin/integrations/google/calendars?tenant=${encodeURIComponent(tenantSlug)}${targetQuery}`);
+      setCalendarOptions(result.calendars);
+      setSelectedCalendarId(result.selectedCalendarId);
+      setShowCalendars(true);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível listar os calendários."); }
+    finally { setBusy(false); }
+  }
+
+  async function saveCalendar() {
+    if (!selectedCalendarId) return;
+    setBusy(true); setError("");
+    try {
+      await apiJson(`/api/admin/integrations/google?tenant=${encodeURIComponent(tenantSlug)}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ professionalId: professionalId ?? null, calendarId: selectedCalendarId }),
+      });
+      window.location.reload();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível salvar o calendário."); setBusy(false); }
+  }
+
+  async function disconnect() {
+    if (!window.confirm(`Desconectar o Google Agenda de ${title}?`)) return;
+    setBusy(true); setError("");
+    try {
+      await apiJson(`/api/admin/integrations/google?tenant=${encodeURIComponent(tenantSlug)}${targetQuery}`, { method: "DELETE" });
+      window.location.reload();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível desconectar."); setBusy(false); }
+  }
+
+  return <article className={`integration-card ${connected ? "connected" : ""}`}>
+    <div className="integration-logo google">31</div>
+    <div><span className={`status-dot ${connected ? "" : "muted"}`}>{connected ? "Conectado" : "Configurar"}</span><h3>{title}</h3><p>{subtitle}</p>{connected && <small>Calendário: {configuration.calendarSummary ?? configuration.calendarId ?? "principal"}</small>}</div>
+    {showCalendars && <div className="calendar-picker"><label>Calendário<select value={selectedCalendarId} onChange={(event) => setSelectedCalendarId(event.target.value)}>{calendarOptions.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.summary}{calendar.primary ? " · principal" : ""}</option>)}</select></label><button disabled={busy} onClick={saveCalendar} type="button">Salvar calendário</button></div>}
+    {error && <p className="integration-error">{error}</p>}
+    <div className="integration-actions">
+      <Link href={connectUrl}>{connected ? "Reconectar conta" : "Conectar Google"}</Link>
+      {connected && <button disabled={busy} onClick={loadCalendars} type="button">{busy ? "Carregando..." : "Escolher calendário"}</button>}
+      {connected && <button className="danger" disabled={busy} onClick={disconnect} type="button">Desconectar</button>}
+    </div>
+  </article>;
+}
+
+function parseIntegrationConfiguration(value?: string | null): { calendarId?: string; calendarSummary?: string } {
+  if (!value) return {};
+  try { return JSON.parse(value) as { calendarId?: string; calendarSummary?: string }; }
+  catch { return {}; }
 }
 
 function Modal({ children, onClose }: { children: ReactNode; onClose: () => void }) { return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><div onMouseDown={(event) => event.stopPropagation()}>{children}</div></div>; }

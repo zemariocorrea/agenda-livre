@@ -1,55 +1,128 @@
-import { encryptSecret, sha256 } from "@/lib/crypto-secrets";
+import { adminTenant, requireTenantManager } from "@/lib/admin-auth";
+import { decryptSecret, encryptSecret, sha256 } from "@/lib/crypto-secrets";
 import { getD1 } from "@/lib/d1";
 import { jsonError } from "@/lib/http";
-import { getCurrentUser } from "@/lib/auth/session";
+import {
+  exchangeGoogleAuthorizationCode,
+  listGoogleCalendars,
+  type GoogleCredentials,
+} from "@/lib/integrations/google-calendar";
 
 export async function GET(request: Request) {
   const d1 = await getD1();
   const url = new URL(request.url);
+  const oauthError = url.searchParams.get("error");
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
+  if (oauthError) return Response.redirect(`${url.origin}/acesso-negado?reason=google_oauth_${encodeURIComponent(oauthError)}`);
   if (!code || !state) return jsonError("O Google não retornou uma autorização válida.", 400, "INVALID_OAUTH_CALLBACK");
 
   const stateHash = await sha256(state);
-  const stored = await d1.prepare("SELECT id, tenant_id, professional_id, redirect_uri FROM oauth_states WHERE provider = 'google_calendar' AND state_hash = ? AND consumed_at IS NULL AND datetime(expires_at) > CURRENT_TIMESTAMP LIMIT 1")
-    .bind(stateHash).first<{ id: string; tenant_id: string; professional_id: string | null; redirect_uri: string }>();
-  if (!stored) return jsonError("Essa autorização expirou ou já foi utilizada.", 400, "INVALID_OAUTH_STATE");
-  if (!stored.professional_id) return jsonError("O profissional da autorização não foi informado.", 400, "PROFESSIONAL_REQUIRED");
-
-  const user = await getCurrentUser();
-  if (!user) return jsonError("Entre na sua conta para concluir a integração.", 401, "UNAUTHENTICATED");
-  const authorization = await d1.prepare(`
-    SELECT 1 AS allowed
-    WHERE EXISTS (
-      SELECT 1 FROM tenant_members
-      WHERE tenant_id = ? AND user_id = ? AND is_active = 1
-    ) OR EXISTS (
-      SELECT 1 FROM platform_admins
-      WHERE user_id = ? AND is_active = 1
-    )
+  const stored = await d1.prepare(`
+    SELECT oauth.id, oauth.tenant_id, oauth.professional_id, oauth.redirect_uri, tenant.slug
+    FROM oauth_states AS oauth
+    INNER JOIN tenants AS tenant ON tenant.id = oauth.tenant_id AND tenant.is_active = 1
+    WHERE oauth.provider = 'google_calendar'
+      AND oauth.state_hash = ?
+      AND oauth.consumed_at IS NULL
+      AND datetime(oauth.expires_at) > CURRENT_TIMESTAMP
     LIMIT 1
-  `).bind(stored.tenant_id, user.id, user.id).first<{ allowed: number }>();
-  if (!authorization) return jsonError("Seu usuário não pode alterar esta integração.", 403, "FORBIDDEN");
-  const professional = await d1.prepare("SELECT id FROM professionals WHERE id = ? AND tenant_id = ? AND is_active = 1 LIMIT 1")
-    .bind(stored.professional_id, stored.tenant_id).first<{ id: string }>();
-  if (!professional) return jsonError("O profissional não pertence mais a esta empresa.", 404, "PROFESSIONAL_NOT_FOUND");
+  `).bind(stateHash).first<{
+    id: string;
+    tenant_id: string;
+    professional_id: string | null;
+    redirect_uri: string;
+    slug: string;
+  }>();
+  if (!stored) return jsonError("Essa autorização expirou ou já foi utilizada.", 400, "INVALID_OAUTH_STATE");
 
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  if (!clientId || !clientSecret) return jsonError("A integração com Google ainda não foi configurada.", 503, "GOOGLE_NOT_CONFIGURED");
-  const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ code, client_id: clientId, client_secret: clientSecret, redirect_uri: stored.redirect_uri, grant_type: "authorization_code" }),
+  const access = await adminTenant(stored.slug);
+  if ("error" in access) return access.error;
+  const managerError = requireTenantManager(access.member.role);
+  if (managerError) return managerError;
+
+  if (stored.professional_id) {
+    const professional = await d1.prepare(
+      "SELECT id FROM professionals WHERE id = ? AND tenant_id = ? AND is_active = 1 LIMIT 1",
+    ).bind(stored.professional_id, stored.tenant_id).first<{ id: string }>();
+    if (!professional) return jsonError("O profissional não pertence mais a esta empresa.", 404, "PROFESSIONAL_NOT_FOUND");
+  }
+
+  let token;
+  try {
+    token = await exchangeGoogleAuthorizationCode({ code, redirectUri: stored.redirect_uri });
+  } catch (error) {
+    return jsonError(error instanceof Error ? error.message : "Não foi possível concluir a autorização do Google.", 400, "GOOGLE_TOKEN_EXCHANGE_FAILED");
+  }
+
+  const existing = await exactConnection(d1, stored.tenant_id, stored.professional_id);
+  let refreshToken = token.refresh_token;
+  if (!refreshToken && existing?.encrypted_credentials) {
+    const previous = await decryptSecret<GoogleCredentials>(existing.encrypted_credentials);
+    refreshToken = previous.refreshToken;
+  }
+  if (!refreshToken) {
+    return jsonError("O Google não retornou acesso offline. Remova o acesso do aplicativo na sua conta Google e conecte novamente.", 400, "GOOGLE_REFRESH_TOKEN_MISSING");
+  }
+
+  let calendars;
+  try {
+    calendars = await listGoogleCalendars(refreshToken);
+  } catch (error) {
+    return jsonError(error instanceof Error ? error.message : "Não foi possível listar os calendários da conta Google.", 400, "GOOGLE_CALENDAR_LIST_FAILED");
+  }
+  const selected = calendars.find((calendar) => calendar.primary) ?? calendars[0];
+  if (!selected) {
+    return jsonError("Essa conta Google não possui um calendário com permissão de escrita.", 400, "GOOGLE_WRITABLE_CALENDAR_NOT_FOUND");
+  }
+
+  const encrypted = await encryptSecret({ refreshToken, calendarId: selected.id } satisfies GoogleCredentials);
+  const configuration = JSON.stringify({
+    calendarId: selected.id,
+    calendarSummary: selected.summary,
+    scope: token.scope ?? "",
+    connectedAt: new Date().toISOString(),
   });
-  const token = await tokenResponse.json() as { refresh_token?: string; scope?: string; error_description?: string };
-  if (!tokenResponse.ok || !token.refresh_token) return jsonError(token.error_description ?? "O Google não retornou acesso offline. Tente conectar novamente.", 400, "GOOGLE_TOKEN_EXCHANGE_FAILED");
 
-  const encrypted = await encryptSecret({ refreshToken: token.refresh_token, calendarId: "primary" });
-  await d1.batch([
-    d1.prepare("INSERT INTO integration_connections (id, tenant_id, professional_id, provider, status, encrypted_credentials, configuration_json) VALUES (?, ?, ?, 'google_calendar', 'connected', ?, ?) ON CONFLICT (tenant_id, provider, professional_id) DO UPDATE SET status = 'connected', encrypted_credentials = excluded.encrypted_credentials, configuration_json = excluded.configuration_json, updated_at = CURRENT_TIMESTAMP")
-      .bind(crypto.randomUUID(), stored.tenant_id, professional.id, encrypted, JSON.stringify({ calendarId: "primary", scope: token.scope })),
-    d1.prepare("UPDATE oauth_states SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?").bind(stored.id),
-  ]);
-  return Response.redirect(`${url.origin}/admin?integration=google-connected&professionalId=${encodeURIComponent(professional.id)}`);
+  if (existing) {
+    await d1.prepare(`
+      UPDATE integration_connections
+      SET status = 'connected', external_account_id = ?, encrypted_credentials = ?,
+          configuration_json = ?, last_synced_at = NULL, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(selected.id, encrypted, configuration, existing.id).run();
+  } else {
+    await d1.prepare(`
+      INSERT INTO integration_connections (
+        id, tenant_id, professional_id, provider, status, external_account_id,
+        encrypted_credentials, configuration_json
+      ) VALUES (?, ?, ?, 'google_calendar', 'connected', ?, ?, ?)
+    `).bind(
+      crypto.randomUUID(),
+      stored.tenant_id,
+      stored.professional_id,
+      selected.id,
+      encrypted,
+      configuration,
+    ).run();
+  }
+
+  await d1.prepare("UPDATE oauth_states SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?").bind(stored.id).run();
+  const target = stored.professional_id ? `&professionalId=${encodeURIComponent(stored.professional_id)}` : "&scope=tenant";
+  return Response.redirect(`${url.origin}/admin?tenant=${encodeURIComponent(stored.slug)}&integration=google-connected${target}`);
+}
+
+async function exactConnection(d1: D1Database, tenantId: string, professionalId: string | null) {
+  if (professionalId) {
+    return d1.prepare(`
+      SELECT id, encrypted_credentials FROM integration_connections
+      WHERE tenant_id = ? AND provider = 'google_calendar' AND professional_id = ?
+      LIMIT 1
+    `).bind(tenantId, professionalId).first<{ id: string; encrypted_credentials: string | null }>();
+  }
+  return d1.prepare(`
+    SELECT id, encrypted_credentials FROM integration_connections
+    WHERE tenant_id = ? AND provider = 'google_calendar' AND professional_id IS NULL
+    LIMIT 1
+  `).bind(tenantId).first<{ id: string; encrypted_credentials: string | null }>();
 }

@@ -469,3 +469,13 @@ button { color: inherit; }
   .auth-heading { margin-top: 27px; }
   .credential-modal { padding: 20px; }
 }
+
+/* Google Calendar configuration */
+.integration-actions { width: 100%; display: grid; gap: 7px; margin-top: 10px; }
+.integration-actions > a, .integration-actions > button, .calendar-picker > button { width: 100%; min-height: 34px; display: grid; place-items: center; border: 1px solid #d9dfda; border-radius: 9px; background: white; color: #315e52; text-decoration: none; cursor: pointer; font-size: 9px; font-weight: 750; }
+.integration-actions > button.danger { color: #9a3e3e; }
+.calendar-picker { width: 100%; margin-top: 12px; padding-top: 12px; border-top: 1px solid #edf0ed; }
+.calendar-picker label { display: grid; gap: 5px; color: #52635e; font-size: 9px; }
+.calendar-picker select { width: 100%; min-height: 36px; border: 1px solid #d9dfda; border-radius: 9px; background: white; padding: 0 9px; color: #263d37; font-size: 10px; }
+.calendar-picker > button { margin-top: 7px; }
+.integration-error { width: 100%; margin: 8px 0 0; color: #9a3e3e !important; font-size: 9px !important; }

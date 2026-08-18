@@ -27,13 +27,22 @@ export async function GET(request: Request) {
   ).bind(serviceId, tenant.id).first<{ id: string }>();
   if (!service) return jsonError("Serviço não encontrado.", 404, "SERVICE_NOT_FOUND");
 
-  const availability = await listAvailableSlotsForService(d1, {
-    tenantId: tenant.id,
-    serviceId: service.id,
-    professionalId,
-    timezone: tenant.timezone,
-    localDate: date,
-  });
+  let availability;
+  try {
+    availability = await listAvailableSlotsForService(d1, {
+      tenantId: tenant.id,
+      serviceId: service.id,
+      professionalId,
+      timezone: tenant.timezone,
+      localDate: date,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith("GOOGLE_AVAILABILITY_UNAVAILABLE")) {
+      return jsonError("Não foi possível validar a agenda externa agora. Tente novamente em instantes.", 503, "GOOGLE_AVAILABILITY_UNAVAILABLE");
+    }
+    throw error;
+  }
 
   if (professionalId && !availability.professionals.length) {
     return jsonError("Profissional não atende esta atividade.", 404, "PROFESSIONAL_SERVICE_NOT_FOUND");

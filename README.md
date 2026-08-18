@@ -81,6 +81,8 @@ Copie `.env.example` para `.env.local` e configure apenas os adaptadores utiliza
 | --- | --- |
 | `GOOGLE_CLIENT_ID` | OAuth do Google Agenda |
 | `GOOGLE_CLIENT_SECRET` | Troca e renovação de token Google |
+| `GOOGLE_REDIRECT_URI` | Callback OAuth cadastrado no Google Cloud |
+| `GOOGLE_AVAILABILITY_FAIL_OPEN` | Política quando Free/Busy externo falhar (`false` recomendado) |
 | `INTEGRATION_ENCRYPTION_KEY` | Chave AES-256 em Base64 para tokens de integrações |
 | `STRIPE_SECRET_KEY` | Criação do checkout opcional |
 | `STRIPE_WEBHOOK_SECRET` | Validação do webhook Stripe |
@@ -113,8 +115,10 @@ Copie `.env.example` para `.env.local` e configure apenas os adaptadores utiliza
 | `PATCH` | `/api/admin/appointments/:id` | Atualização de status do agendamento |
 | `GET/PATCH` | `/api/admin/company` | Dados, marca e conteúdo do site da empresa |
 | `GET` | `/api/admin/dashboard` | Métricas e compromissos do painel |
-| `GET` | `/api/admin/integrations/google/start` | Início do OAuth para um profissional |
+| `GET` | `/api/admin/integrations/google/start` | Início do OAuth da empresa ou profissional |
 | `GET` | `/api/admin/integrations/google/callback` | Conclusão segura do OAuth |
+| `GET/PATCH/DELETE` | `/api/admin/integrations/google` | Status, seleção de calendário e desconexão |
+| `GET` | `/api/admin/integrations/google/calendars` | Calendários graváveis da conta conectada |
 | `POST` | `/api/internal/outbox` | Entrega de agenda e notificações |
 | `POST` | `/api/webhooks/stripe` | Confirmação assinada de pagamento |
 | `GET` | `/agendamento/:token` | Confirmação pública e retorno do checkout |
@@ -166,3 +170,4 @@ Os testes aplicam todas as migrações em SQLite real e comprovam provisionament
 - [Arquitetura](docs/ARCHITECTURE.md)
 - [Prompt para continuar em outro Work](docs/PROMPT_CONTINUAR.md)
 - [Autenticação interna](docs/AUTHENTICATION.md)
+- [Google Calendar](docs/GOOGLE_CALENDAR.md)

@@ -1,7 +1,7 @@
-import { decryptSecret } from "@/lib/crypto-secrets";
 import { getD1 } from "@/lib/d1";
 import { sendEmail } from "@/lib/integrations/email";
-import { createGoogleCalendarEvent } from "@/lib/integrations/google-calendar";
+import { createGoogleCalendarEvent, deleteGoogleCalendarEvent } from "@/lib/integrations/google-calendar";
+import { googleCredentialsFromConnection, resolveGoogleConnection, type GoogleConnectionRow } from "@/lib/integrations/google-connection";
 import { formatInTimeZone } from "@/lib/timezone";
 
 type EventPayload = {
@@ -16,6 +16,7 @@ type EventPayload = {
   endsAtUtc: string;
   timezone: string;
   location: string;
+  googleEventId?: string | null;
 };
 
 export async function POST(request: Request) {
@@ -32,6 +33,7 @@ export async function POST(request: Request) {
     try {
       const payload = JSON.parse(event.payload_json) as EventPayload;
       if (event.event_type === "appointment.created") await syncCalendar(event.tenant_id, payload);
+      if (event.event_type === "appointment.cancelled") await cancelCalendar(event.tenant_id, payload);
       if (event.event_type === "notification.customer.confirmation") await notifyCustomer(event.id, payload);
       if (event.event_type === "notification.admin.new_booking") await notifyAdmin(event.id, payload);
       await d1.prepare("UPDATE outbox_events SET status = 'processed', processed_at = CURRENT_TIMESTAMP, last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(event.id).run();
@@ -49,10 +51,19 @@ export async function POST(request: Request) {
 
 async function syncCalendar(tenantId: string, payload: EventPayload) {
   const d1 = await getD1();
-  const connection = await d1.prepare("SELECT encrypted_credentials FROM integration_connections WHERE tenant_id = ? AND professional_id = ? AND provider = 'google_calendar' AND status = 'connected' LIMIT 1")
-    .bind(tenantId, payload.professionalId).first<{ encrypted_credentials: string | null }>();
-  if (!connection?.encrypted_credentials) return;
-  const credentials = await decryptSecret<{ refreshToken: string; calendarId?: string }>(connection.encrypted_credentials);
+  const appointment = await d1.prepare("SELECT status FROM appointments WHERE id = ? AND tenant_id = ? LIMIT 1")
+    .bind(payload.appointmentId, tenantId).first<{ status: string }>();
+  if (!appointment || appointment.status === "cancelled") return;
+
+  const connection = await resolveGoogleConnection(d1, {
+    tenantId,
+    professionalId: payload.professionalId,
+    allowTenantFallback: true,
+  });
+  if (!connection) return;
+  const credentials = await googleCredentialsFromConnection(connection);
+  if (!credentials) return;
+
   const eventId = await createGoogleCalendarEvent(credentials, {
     appointmentId: payload.appointmentId,
     title: payload.serviceName,
@@ -65,8 +76,68 @@ async function syncCalendar(tenantId: string, payload: EventPayload) {
   });
   await d1.batch([
     d1.prepare("UPDATE appointments SET google_event_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(eventId, payload.appointmentId),
+    d1.prepare("UPDATE integration_connections SET last_synced_at = CURRENT_TIMESTAMP, status = 'connected', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(connection.id),
     d1.prepare("INSERT INTO notification_deliveries (id, tenant_id, appointment_id, channel, recipient, status, provider_reference, sent_at) VALUES (?, ?, ?, 'calendar', ?, 'sent', ?, CURRENT_TIMESTAMP)")
-      .bind(crypto.randomUUID(), tenantId, payload.appointmentId, payload.customerEmail, eventId),
+      .bind(
+        crypto.randomUUID(),
+        tenantId,
+        payload.appointmentId,
+        payload.customerEmail,
+        JSON.stringify({ eventId, connectionId: connection.id, calendarId: credentials.calendarId ?? "primary" }),
+      ),
+  ]);
+}
+
+async function cancelCalendar(tenantId: string, payload: EventPayload) {
+  const d1 = await getD1();
+  const appointment = await d1.prepare("SELECT google_event_id FROM appointments WHERE id = ? AND tenant_id = ? LIMIT 1")
+    .bind(payload.appointmentId, tenantId).first<{ google_event_id: string | null }>();
+  const delivery = await d1.prepare(`
+    SELECT provider_reference
+    FROM notification_deliveries
+    WHERE tenant_id = ? AND appointment_id = ? AND channel = 'calendar' AND status = 'sent'
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).bind(tenantId, payload.appointmentId).first<{ provider_reference: string | null }>();
+
+  let eventId = appointment?.google_event_id ?? payload.googleEventId ?? null;
+  let connectionId: string | null = null;
+  let originalCalendarId: string | null = null;
+  if (delivery?.provider_reference) {
+    try {
+      const reference = JSON.parse(delivery.provider_reference) as { eventId?: string; connectionId?: string; calendarId?: string };
+      eventId = reference.eventId ?? eventId;
+      connectionId = reference.connectionId ?? null;
+      originalCalendarId = reference.calendarId ?? null;
+    } catch {
+      eventId = delivery.provider_reference || eventId;
+    }
+  }
+  if (!eventId) return;
+
+  let connection = connectionId
+    ? await d1.prepare(`
+        SELECT id, tenant_id, professional_id, status, external_account_id,
+               encrypted_credentials, configuration_json, last_synced_at
+        FROM integration_connections
+        WHERE id = ? AND tenant_id = ? AND provider = 'google_calendar' AND status = 'connected'
+        LIMIT 1
+      `).bind(connectionId, tenantId).first<GoogleConnectionRow>()
+    : null;
+  connection ??= await resolveGoogleConnection(d1, {
+    tenantId,
+    professionalId: payload.professionalId,
+    allowTenantFallback: true,
+  });
+  if (!connection) return;
+  const credentials = await googleCredentialsFromConnection(connection);
+  if (!credentials) return;
+  if (originalCalendarId) credentials.calendarId = originalCalendarId;
+
+  await deleteGoogleCalendarEvent(credentials, eventId);
+  await d1.batch([
+    d1.prepare("UPDATE appointments SET google_event_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(payload.appointmentId),
+    d1.prepare("UPDATE integration_connections SET last_synced_at = CURRENT_TIMESTAMP, status = 'connected', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(connection.id),
   ]);
 }
 

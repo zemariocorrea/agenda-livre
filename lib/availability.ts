@@ -6,6 +6,8 @@ import {
   timeToMinutes,
   weekdayOf,
 } from "./timezone";
+import { googleCredentialsFromConnection, resolveGoogleConnection } from "./integrations/google-connection";
+import { listGoogleBusyWindows } from "./integrations/google-calendar";
 
 export type ProfessionalForService = {
   id: string;
@@ -139,9 +141,17 @@ export async function listAvailableSlots(
   ]);
 
   const rules = rulesResult.results as unknown as AvailabilityRuleRow[];
+  const googleBusy = await loadGoogleBusyWindows(d1, {
+    tenantId: input.tenantId,
+    professionalId: input.professional.id,
+    startsAtUtc: dayStart.toISOString(),
+    endsAtUtc: dayEnd.toISOString(),
+    timezone: input.timezone,
+  });
   const unavailable = [
     ...(appointmentsResult.results as unknown as WindowRow[]),
     ...(blocksResult.results as unknown as WindowRow[]),
+    ...googleBusy,
   ];
   const now = (input.now ?? new Date()).getTime();
   const uniqueSlots = new Map<string, AvailableSlot>();
@@ -224,4 +234,25 @@ export async function listAvailableSlotsForService(
     }
   }
   return { professionals, slots: [...firstProfessionalPerTime.values()] };
+}
+
+async function loadGoogleBusyWindows(
+  d1: D1Database,
+  input: { tenantId: string; professionalId: string; startsAtUtc: string; endsAtUtc: string; timezone: string },
+): Promise<WindowRow[]> {
+  const connection = await resolveGoogleConnection(d1, {
+    tenantId: input.tenantId,
+    professionalId: input.professionalId,
+    allowTenantFallback: true,
+  });
+  if (!connection) return [];
+  const credentials = await googleCredentialsFromConnection(connection);
+  if (!credentials) return [];
+  try {
+    const busy = await listGoogleBusyWindows(credentials, input);
+    return busy.map((item) => ({ starts_at_utc: item.startsAtUtc, ends_at_utc: item.endsAtUtc }));
+  } catch (error) {
+    if (process.env.GOOGLE_AVAILABILITY_FAIL_OPEN === "true") return [];
+    throw new Error(error instanceof Error ? `GOOGLE_AVAILABILITY_UNAVAILABLE: ${error.message}` : "GOOGLE_AVAILABILITY_UNAVAILABLE");
+  }
 }
