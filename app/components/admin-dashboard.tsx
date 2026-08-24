@@ -10,9 +10,9 @@ import { parseLocalDateTime, partsInZone } from "@/lib/timezone";
 type View = "overview" | "agenda" | "administrators" | "professionals" | "services" | "availability" | "blocks" | "integrations" | "company";
 type DayRule = { weekday: number; enabled: boolean; start: string; end: string; interval: number };
 type RawRule = { professional_id: string; weekday: number; start_time: string; end_time: string; slot_interval_minutes: number; is_active: number };
-type AdminService = { id: string; name: string; description: string; duration: number; priceCents: number; active: boolean; color: string; professionalIds: string[] };
+type AdminService = { id: string; name: string; description: string; duration: number; priceCents: number; paymentType: "none" | "full" | "deposit"; depositAmountCents: number | null; active: boolean; color: string; professionalIds: string[] };
 type AdminProfessional = { id: string; name: string; title: string; bio: string; email: string; color: string; active: boolean; serviceIds: string[]; googleStatus: string | null };
-type Appointment = { id: string; customer_name: string; customer_email: string; customer_phone: string; starts_at_utc: string; ends_at_utc?: string; status: string; payment_status: string; service_name: string; duration_minutes?: number; professional_id: string; professional_name: string; professional_color: string };
+type Appointment = { id: string; customer_name: string; customer_email: string; customer_phone: string; starts_at_utc: string; ends_at_utc?: string; status: string; payment_status: string; payment_method?: string | null; payment_amount_cents?: number | null; payment_proof_available?: number; service_name: string; duration_minutes?: number; professional_id: string; professional_name: string; professional_color: string };
 type Integration = { provider: string; status: string; last_synced_at: string | null; professional_id: string | null; professional_name: string | null; external_account_id?: string | null; configuration_json?: string | null };
 type AdminMember = { id: string; email: string; display_name: string; role: string; is_active: number };
 type AdminBlock = { id: string; professional_id: string | null; professional_name: string | null; starts_at_utc: string; ends_at_utc: string; reason: string };
@@ -37,6 +37,14 @@ type CompanySettings = {
   promotion_title: string;
   promotion_description: string;
   promotion_image_url: string;
+  payment_enabled: number;
+  pix_enabled: number;
+  pay_on_site_enabled: number;
+  contact_for_payment_enabled: number;
+  pix_key: string;
+  pix_key_type: string;
+  pix_holder_name: string;
+  require_payment_to_confirm: number;
 };
 type DashboardData = {
   tenant: { slug: string; name: string; timezone: string; plan: string; maxProfessionals: number };
@@ -125,15 +133,16 @@ export function AdminDashboard({ tenantSlug = "clinica-aurora" }: { tenantSlug?:
     const professionalIds = data.getAll("professionalIds").map(String);
     await performSave(async () => {
       const endpoint = editingService ? `/api/admin/services/${encodeURIComponent(editingService.id)}?${query}` : `/api/admin/services?${query}`;
-      const result = await apiJson<{ service: { id: string; name: string; description: string; durationMinutes: number; priceCents: number; isActive?: boolean; professionalIds: string[] } }>(endpoint, {
+      const result = await apiJson<{ service: { id: string; name: string; description: string; durationMinutes: number; priceCents: number; paymentType: "none" | "full" | "deposit"; depositAmountCents: number | null; isActive?: boolean; professionalIds: string[] } }>(endpoint, {
         method: editingService ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
           name: String(data.get("name") ?? ""), description: String(data.get("description") ?? ""),
           durationMinutes: Number(data.get("duration")), priceCents: Math.round(Number(data.get("price")) * 100),
+          paymentType: String(data.get("paymentType") ?? "none"), depositAmountCents: Math.round(Number(data.get("depositAmount") || 0) * 100),
           color: String(data.get("color") ?? "#567f72"), professionalIds,
         }),
       });
       const service = result.service;
-      const mapped = { id: service.id, name: service.name, description: service.description, duration: service.durationMinutes, priceCents: service.priceCents, active: service.isActive ?? editingService?.active ?? true, color: String(data.get("color") ?? "#567f72"), professionalIds: service.professionalIds };
+      const mapped = { id: service.id, name: service.name, description: service.description, duration: service.durationMinutes, priceCents: service.priceCents, paymentType: service.paymentType, depositAmountCents: service.depositAmountCents, active: service.isActive ?? editingService?.active ?? true, color: String(data.get("color") ?? "#567f72"), professionalIds: service.professionalIds };
       setServices((items) => editingService ? items.map((item) => item.id === mapped.id ? mapped : item) : [...items, mapped]);
       setProfessionals((items) => items.map((professional) => ({ ...professional, serviceIds: professionalIds.includes(professional.id) ? [...new Set([...professional.serviceIds, service.id])] : professional.serviceIds.filter((id) => id !== service.id) })));
       form.reset(); setModal(null); setEditingService(null); setMessage(editingService ? "Atividade atualizada." : "Atividade criada e vinculada aos profissionais.");
@@ -247,6 +256,20 @@ export function AdminDashboard({ tenantSlug = "clinica-aurora" }: { tenantSlug?:
     catch (error) { setAppointments((items) => items.map((item) => item.id === id ? current : item)); setMessage(error instanceof Error ? error.message : "Não foi possível alterar o agendamento."); }
   }
 
+  async function updateAppointmentPayment(id: string, action: "confirm" | "reject") {
+    const current = appointments.find((item) => item.id === id);
+    if (!current) return;
+    try {
+      const result = await apiJson<{ appointment: { status: string; paymentStatus: string } }>(`/api/admin/appointments/${encodeURIComponent(id)}/payment?${query}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }),
+      });
+      setAppointments((items) => items.map((item) => item.id === id ? { ...item, status: result.appointment.status, payment_status: result.appointment.paymentStatus } : item));
+      setMessage(action === "confirm" ? "Pagamento confirmado." : "Pagamento rejeitado.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Não foi possível atualizar o pagamento.");
+    }
+  }
+
   async function saveCompany(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -267,6 +290,14 @@ export function AdminDashboard({ tenantSlug = "clinica-aurora" }: { tenantSlug?:
       promotionTitle: data.get("promotionTitle"),
       promotionDescription: data.get("promotionDescription"),
       promotionImageUrl: data.get("promotionImageUrl"),
+      paymentEnabled: data.get("paymentEnabled") === "on",
+      pixEnabled: data.get("pixEnabled") === "on",
+      payOnSiteEnabled: data.get("payOnSiteEnabled") === "on",
+      contactForPaymentEnabled: data.get("contactForPaymentEnabled") === "on",
+      pixKey: data.get("pixKey"),
+      pixKeyType: data.get("pixKeyType"),
+      pixHolderName: data.get("pixHolderName"),
+      requirePaymentToConfirm: data.get("requirePaymentToConfirm") === "on",
     };
 
     await performSave(async () => {
@@ -294,6 +325,14 @@ export function AdminDashboard({ tenantSlug = "clinica-aurora" }: { tenantSlug?:
         promotion_title: String(payload.promotionTitle ?? ""),
         promotion_description: String(payload.promotionDescription ?? ""),
         promotion_image_url: String(payload.promotionImageUrl ?? ""),
+        payment_enabled: payload.paymentEnabled ? 1 : 0,
+        pix_enabled: payload.pixEnabled ? 1 : 0,
+        pay_on_site_enabled: payload.payOnSiteEnabled ? 1 : 0,
+        contact_for_payment_enabled: payload.contactForPaymentEnabled ? 1 : 0,
+        pix_key: String(payload.pixKey ?? ""),
+        pix_key_type: String(payload.pixKeyType ?? ""),
+        pix_holder_name: String(payload.pixHolderName ?? ""),
+        require_payment_to_confirm: payload.requirePaymentToConfirm ? 1 : 0,
       } : current);
 
       setMessage("Identidade e conteúdo do site atualizados.");
@@ -326,7 +365,7 @@ export function AdminDashboard({ tenantSlug = "clinica-aurora" }: { tenantSlug?:
       {message && <p className="form-error admin-message" role="status">{message}</p>}
       {loading && <div className="admin-content"><section className="panel"><p>Carregando painel...</p></section></div>}
       {!loading && view === "overview" && <Overview dashboard={dashboard} money={money} />}
-      {!loading && view === "agenda" && <Agenda appointments={appointments} timezone={dashboard?.tenant.timezone ?? "America/Sao_Paulo"} onStatus={updateAppointmentStatus} />}
+      {!loading && view === "agenda" && <Agenda appointments={appointments} timezone={dashboard?.tenant.timezone ?? "America/Sao_Paulo"} tenantSlug={tenantSlug} onStatus={updateAppointmentStatus} onPayment={updateAppointmentPayment} />}
       {!loading && view === "administrators" && <Administrators members={members} onAdd={() => { setEditingMember(null); setModal("member"); }} onEdit={(member) => { setEditingMember(member); setModal("member"); }} onToggle={toggleMember} />}
       {!loading && view === "professionals" && <Professionals professionals={professionals} services={services} onToggle={toggleProfessional} onEdit={(professional) => { setEditingProfessional(professional); setModal("professional"); }} onAdd={() => { setEditingProfessional(null); setModal("professional"); }} />}
       {!loading && view === "services" && <Services services={services} professionals={professionals} money={money} onToggle={toggleService} onEdit={(service) => { setEditingService(service); setModal("service"); }} onAdd={() => { setEditingService(null); setModal("service"); }} />}
@@ -352,7 +391,7 @@ export function AdminDashboard({ tenantSlug = "clinica-aurora" }: { tenantSlug?:
         <span>minutos</span>
       </div>
     </label>
-      <label>Preço (R$)<input name="price" min="0" step="0.01" type="number" defaultValue={(editingService?.priceCents ?? 15000) / 100} /></label></div><label>Cor<input className="color-input" name="color" type="color" defaultValue={editingService?.color ?? "#567f72"} /></label><CheckboxGroup name="professionalIds" title="Profissionais que atendem" selectedIds={editingService?.professionalIds} items={professionals.filter((item) => item.active).map((item) => ({ id: item.id, label: item.name }))} /><ModalActions saving={saving} label="Salvar atividade" onClose={() => { setModal(null); setEditingService(null); }} /></form></Modal>}
+      <label>Preço (R$)<input name="price" min="0" step="0.01" type="number" defaultValue={(editingService?.priceCents ?? 15000) / 100} /></label></div><div className="modal-grid"><label>Pagamento antecipado<select name="paymentType" defaultValue={editingService?.paymentType ?? "none"}><option value="none">Não exigir</option><option value="full">Valor integral</option><option value="deposit">Sinal</option></select></label><label>Valor do sinal (R$)<input name="depositAmount" min="0" step="0.01" type="number" defaultValue={(editingService?.depositAmountCents ?? 0) / 100} /><small>Usado somente quando o tipo for Sinal.</small></label></div><label>Cor<input className="color-input" name="color" type="color" defaultValue={editingService?.color ?? "#567f72"} /></label><CheckboxGroup name="professionalIds" title="Profissionais que atendem" selectedIds={editingService?.professionalIds} items={professionals.filter((item) => item.active).map((item) => ({ id: item.id, label: item.name }))} /><ModalActions saving={saving} label="Salvar atividade" onClose={() => { setModal(null); setEditingService(null); }} /></form></Modal>}
     {modal === "professional" && <Modal onClose={() => { setModal(null); setEditingProfessional(null); }}><form className="service-modal" onSubmit={addProfessional}><ModalHead eyebrow="Equipe" title={editingProfessional ? "Editar profissional" : "Novo profissional"} onClose={() => { setModal(null); setEditingProfessional(null); }} /><div className="modal-grid"><label>Nome<input name="name" required maxLength={120} placeholder="Nome completo" defaultValue={editingProfessional?.name} /></label><label>Função<input name="title" required maxLength={120} placeholder="Ex.: Psicóloga" defaultValue={editingProfessional?.title} /></label></div><label>E-mail<input name="email" type="email" maxLength={200} placeholder="profissional@clinica.com" defaultValue={editingProfessional?.email} /></label><label>Apresentação<textarea name="bio" maxLength={800} placeholder="Especialidade e breve apresentação" defaultValue={editingProfessional?.bio} /></label><label>Cor da agenda<input className="color-input" name="color" type="color" defaultValue={editingProfessional?.color ?? "#17624f"} /></label><CheckboxGroup name="serviceIds" title="Atividades realizadas" selectedIds={editingProfessional?.serviceIds} items={services.filter((item) => item.active).map((item) => ({ id: item.id, label: item.name }))} /><ModalActions saving={saving} label="Salvar profissional" onClose={() => { setModal(null); setEditingProfessional(null); }} /></form></Modal>}
     {modal === "member" && <Modal onClose={() => { setModal(null); setEditingMember(null); }}><form className="service-modal" onSubmit={saveMember}><ModalHead eyebrow="Acesso" title={editingMember ? "Editar administrador" : "Novo administrador"} onClose={() => { setModal(null); setEditingMember(null); }} /><label>Nome completo<input name="displayName" required maxLength={120} defaultValue={editingMember?.display_name} /></label><label>E-mail de acesso<input name="email" required type="email" maxLength={254} defaultValue={editingMember?.email} readOnly={Boolean(editingMember)} /></label><label>Permissão<select name="role" defaultValue={editingMember?.role ?? "admin"}><option value="admin">Administrador</option><option value="staff">Equipe operacional</option></select></label><p className="modal-hint">O usuário acessará somente esta empresa. O proprietário permanece protegido.</p><ModalActions saving={saving} label="Salvar acesso" onClose={() => { setModal(null); setEditingMember(null); }} /></form></Modal>}
     {modal === "block" && <Modal onClose={() => { setModal(null); setEditingBlock(null); }}><form className="service-modal" onSubmit={addBlock}><ModalHead eyebrow="Agenda" title={editingBlock ? "Editar bloqueio" : "Novo bloqueio"} onClose={() => { setModal(null); setEditingBlock(null); }} /><label>Escopo<select name="professionalId" defaultValue={editingBlock?.professional_id ?? ""}><option value="">Toda a empresa</option>{professionals.map((professional) => <option key={professional.id} value={professional.id}>{professional.name}</option>)}</select></label><div className="modal-grid"><label>Início<input name="startsAt" required type="datetime-local" defaultValue={editingBlock ? dateTimeInput(editingBlock.starts_at_utc, dashboard?.tenant.timezone ?? "America/Sao_Paulo") : undefined} /></label><label>Fim<input name="endsAt" required type="datetime-local" defaultValue={editingBlock ? dateTimeInput(editingBlock.ends_at_utc, dashboard?.tenant.timezone ?? "America/Sao_Paulo") : undefined} /></label></div><label>Motivo<input name="reason" required maxLength={300} placeholder="Feriado, reunião, férias..." defaultValue={editingBlock?.reason} /></label><p className="modal-hint">Um bloqueio global impede todas as agendas; o individual afeta apenas o profissional escolhido.</p><ModalActions saving={saving} label="Salvar bloqueio" onClose={() => { setModal(null); setEditingBlock(null); }} /></form></Modal>}
@@ -371,11 +410,31 @@ function Overview({ dashboard, money }: { dashboard: DashboardData | null; money
 }
 
 function Metric({ label, value, note }: { label: string; value: string; note: string }) { return <article className="metric-card"><div><span>{label}</span></div><strong>{value}</strong><p>{note}</p></article>; }
-function Agenda({ appointments, timezone, onStatus }: { appointments: Appointment[]; timezone: string; onStatus: (id: string, status: string) => void }) { return <div className="admin-content"><section className="panel schedule-panel"><div className="panel-title"><div><p className="eyebrow">Operação</p><h2>Todos os agendamentos</h2><p>Atualize confirmações, conclusão, faltas e cancelamentos.</p></div><span>{appointments.length} registros</span></div><AppointmentList appointments={appointments} timezone={timezone} onStatus={onStatus} /></section></div>; }
+function Agenda({ appointments, timezone, tenantSlug, onStatus, onPayment }: { appointments: Appointment[]; timezone: string; tenantSlug: string; onStatus: (id: string, status: string) => void; onPayment: (id: string, action: "confirm" | "reject") => void }) {
+  return <div className="admin-content"><section className="panel schedule-panel"><div className="panel-title"><div><p className="eyebrow">Operação</p><h2>Todos os agendamentos</h2><p>Atualize confirmações, conclusão, faltas, cancelamentos e pagamentos manuais.</p></div><span>{appointments.length} registros</span></div><AppointmentList appointments={appointments} timezone={timezone} tenantSlug={tenantSlug} onStatus={onStatus} onPayment={onPayment} /></section></div>;
+}
 
-function AppointmentList({ appointments, timezone, onStatus }: { appointments: Appointment[]; timezone: string; onStatus?: (id: string, status: string) => void }) {
+function AppointmentList({ appointments, timezone, tenantSlug, onStatus, onPayment }: { appointments: Appointment[]; timezone: string; tenantSlug?: string; onStatus?: (id: string, status: string) => void; onPayment?: (id: string, action: "confirm" | "reject") => void }) {
   if (!appointments.length) return <p className="empty-state">Nenhum compromisso encontrado.</p>;
-  return <div className="day-timeline">{appointments.map((item) => { const start = new Date(item.starts_at_utc); const end = item.ends_at_utc ? new Date(item.ends_at_utc) : new Date(start.getTime() + (item.duration_minutes ?? 60) * 60_000); const time = new Intl.DateTimeFormat("pt-BR", { timeZone: timezone, hour: "2-digit", minute: "2-digit" }); const date = new Intl.DateTimeFormat("pt-BR", { timeZone: timezone, day: "2-digit", month: "short" }); return <article className="appointment" key={item.id}><time>{time.format(start)}<small>{date.format(start)} · {time.format(end)}</small></time><i style={{ background: item.professional_color }} /><div><strong>{item.customer_name}</strong><span>{item.service_name} · {item.professional_name}</span>{onStatus && <small>{item.customer_email || item.customer_phone}</small>}</div><span className={item.payment_status === "paid" ? "paid" : "pending"}>{item.payment_status === "paid" ? "Pago" : "No local"}</span>{onStatus && <select className={`appointment-status ${item.status}`} aria-label={`Status de ${item.customer_name}`} value={item.status} onChange={(event) => onStatus(item.id, event.target.value)}><option value="pending">Pendente</option><option value="confirmed">Confirmado</option><option value="completed">Concluído</option><option value="no_show">Faltou</option><option value="cancelled">Cancelado</option></select>}</article>; })}</div>;
+  return <div className="day-timeline">{appointments.map((item) => {
+    const start = new Date(item.starts_at_utc);
+    const end = item.ends_at_utc ? new Date(item.ends_at_utc) : new Date(start.getTime() + (item.duration_minutes ?? 60) * 60_000);
+    const time = new Intl.DateTimeFormat("pt-BR", { timeZone: timezone, hour: "2-digit", minute: "2-digit" });
+    const date = new Intl.DateTimeFormat("pt-BR", { timeZone: timezone, day: "2-digit", month: "short" });
+    const canReviewPayment = Boolean(onPayment && item.payment_method && !["paid", "not_required"].includes(item.payment_status));
+    return <article className="appointment" key={item.id}>
+      <time>{time.format(start)}<small>{date.format(start)} · {time.format(end)}</small></time>
+      <i style={{ background: item.professional_color }} />
+      <div><strong>{item.customer_name}</strong><span>{item.service_name} · {item.professional_name}</span>{onStatus && <small>{item.customer_email || item.customer_phone}</small>}</div>
+      <div className="appointment-payment">
+        <span className={item.payment_status === "paid" ? "paid" : item.payment_status === "rejected" ? "rejected" : "pending"}>{paymentStatusLabel(item.payment_status, item.payment_method)}</span>
+        {item.payment_method && <small>{paymentMethodLabel(item.payment_method)}{item.payment_amount_cents ? ` · ${formatMoney(item.payment_amount_cents)}` : ""}</small>}
+        {tenantSlug && item.payment_proof_available ? <a href={`/api/admin/appointments/${encodeURIComponent(item.id)}/payment-proof?tenant=${encodeURIComponent(tenantSlug)}`} target="_blank" rel="noreferrer">Ver comprovante ↗</a> : null}
+        {canReviewPayment && <span className="appointment-payment-actions"><button onClick={() => onPayment?.(item.id, "confirm")} type="button">Confirmar pagamento</button><button onClick={() => onPayment?.(item.id, "reject")} type="button">Rejeitar</button></span>}
+      </div>
+      {onStatus && <select className={`appointment-status ${item.status}`} aria-label={`Status de ${item.customer_name}`} value={item.status} onChange={(event) => onStatus(item.id, event.target.value)}><option value="pending">Pendente</option><option value="confirmed">Confirmado</option><option value="completed">Concluído</option><option value="no_show">Faltou</option><option value="cancelled">Cancelado</option></select>}
+    </article>;
+  })}</div>;
 }
 
 function Administrators({ members, onToggle, onEdit, onAdd }: { members: AdminMember[]; onToggle: (member: AdminMember) => void; onEdit: (member: AdminMember) => void; onAdd: () => void }) {
@@ -419,6 +478,14 @@ function CompanySettingsView({
     promotion_title: "",
     promotion_description: "",
     promotion_image_url: "",
+    payment_enabled: 0,
+    pix_enabled: 0,
+    pay_on_site_enabled: 1,
+    contact_for_payment_enabled: 0,
+    pix_key: "",
+    pix_key_type: "",
+    pix_holder_name: "",
+    require_payment_to_confirm: 1,
   };
 
   const [draft, setDraft] = useState(() => ({
@@ -438,6 +505,14 @@ function CompanySettingsView({
     promotionTitle: initialCompany.promotion_title || "",
     promotionDescription: initialCompany.promotion_description || "",
     promotionImageUrl: initialCompany.promotion_image_url || "",
+    paymentEnabled: Boolean(initialCompany.payment_enabled),
+    pixEnabled: Boolean(initialCompany.pix_enabled),
+    payOnSiteEnabled: Boolean(initialCompany.pay_on_site_enabled),
+    contactForPaymentEnabled: Boolean(initialCompany.contact_for_payment_enabled),
+    pixKey: initialCompany.pix_key || "",
+    pixKeyType: initialCompany.pix_key_type || "",
+    pixHolderName: initialCompany.pix_holder_name || "",
+    requirePaymentToConfirm: Boolean(initialCompany.require_payment_to_confirm),
   }));
   const [uploading, setUploading] = useState<"logo" | "cover" | "promotion" | null>(null);
   const [uploadError, setUploadError] = useState("");
@@ -596,6 +671,29 @@ function CompanySettingsView({
           <input name="promotionImageUrl" type="hidden" value={draft.promotionImageUrl} />
         </section>
 
+        <section className="site-editor-section payment-settings-section">
+          <div className="site-editor-section-head">
+            <div><strong>Pagamento e reserva</strong><small>Configure Pix manual, contato e pagamento no local</small></div>
+            <label className="switch"><input name="paymentEnabled" checked={draft.paymentEnabled} onChange={(event) => setDraft((current) => ({ ...current, paymentEnabled: event.target.checked }))} type="checkbox" /><b /></label>
+          </div>
+
+          {draft.paymentEnabled && <>
+            <div className="payment-method-settings">
+              <label><input name="pixEnabled" checked={draft.pixEnabled} onChange={(event) => setDraft((current) => ({ ...current, pixEnabled: event.target.checked }))} type="checkbox" /> Pix</label>
+              <label><input name="contactForPaymentEnabled" checked={draft.contactForPaymentEnabled} onChange={(event) => setDraft((current) => ({ ...current, contactForPaymentEnabled: event.target.checked }))} type="checkbox" /> Entrar em contato</label>
+              <label><input name="payOnSiteEnabled" checked={draft.payOnSiteEnabled} onChange={(event) => setDraft((current) => ({ ...current, payOnSiteEnabled: event.target.checked }))} type="checkbox" /> Pagar no local</label>
+            </div>
+
+            {draft.pixEnabled && <div className="modal-grid payment-pix-fields">
+              <label>Chave Pix<input name="pixKey" required value={draft.pixKey} onChange={(event) => setDraft((current) => ({ ...current, pixKey: event.target.value }))} placeholder="E-mail, telefone, CPF/CNPJ ou aleatória" /></label>
+              <label>Tipo da chave<select name="pixKeyType" value={draft.pixKeyType} onChange={(event) => setDraft((current) => ({ ...current, pixKeyType: event.target.value }))}><option value="">Não informar</option><option value="email">E-mail</option><option value="phone">Telefone</option><option value="cpf">CPF</option><option value="cnpj">CNPJ</option><option value="random">Aleatória</option></select></label>
+              <label>Titular<input name="pixHolderName" value={draft.pixHolderName} onChange={(event) => setDraft((current) => ({ ...current, pixHolderName: event.target.value }))} placeholder={draft.name || "Nome do titular"} /></label>
+            </div>}
+
+            <label className="payment-confirm-setting"><span><strong>Exigir pagamento para confirmar</strong><small>Pix e contato ficam pendentes até a conferência do estabelecimento.</small></span><span className="switch"><input name="requirePaymentToConfirm" checked={draft.requirePaymentToConfirm} onChange={(event) => setDraft((current) => ({ ...current, requirePaymentToConfirm: event.target.checked }))} type="checkbox" /><b /></span></label>
+          </>}
+        </section>
+
         {uploadError && <p className="form-error site-upload-error">{uploadError}</p>}
 
         <div className="modal-actions site-save-actions">
@@ -676,7 +774,7 @@ function Professionals({ professionals, services, onToggle, onEdit, onAdd }: { p
 }
 
 function Services({ services, professionals, money, onToggle, onEdit, onAdd }: { services: AdminService[]; professionals: AdminProfessional[]; money: Intl.NumberFormat; onToggle: (id: string) => void; onEdit: (service: AdminService) => void; onAdd: () => void }) {
-  return <div className="admin-content services-view"><div className="section-intro"><div><h2>Catálogo da empresa</h2><p>Uma atividade pode ser realizada por vários profissionais.</p></div><span>{services.filter((item) => item.active).length} atividades publicadas</span></div><section className="service-admin-grid">{services.map((service) => <article className={`service-admin-card ${service.active ? "" : "disabled"}`} key={service.id}><i style={{ background: service.color }} /><div className="service-admin-head"><span>{formatDuration(service.duration)}</span><label className="switch"><input checked={service.active} onChange={() => onToggle(service.id)} type="checkbox" /><b /></label></div><h3>{service.name}</h3><p>{service.description || "Atendimento configurado para agendamento online."}</p><strong>{money.format(service.priceCents / 100)}</strong><small>{service.professionalIds.map((id) => professionals.find((professional) => professional.id === id)?.name).filter(Boolean).join(", ") || "Sem profissional vinculado"}</small><div className="service-card-actions"><button onClick={() => onEdit(service)} type="button">Editar atividade e vínculos</button></div></article>)}<button className="add-service-card" onClick={onAdd} type="button"><span>＋</span><strong>Adicionar atividade</strong><small>Vincule à equipe responsável</small></button></section></div>;
+  return <div className="admin-content services-view"><div className="section-intro"><div><h2>Catálogo da empresa</h2><p>Uma atividade pode ser realizada por vários profissionais.</p></div><span>{services.filter((item) => item.active).length} atividades publicadas</span></div><section className="service-admin-grid">{services.map((service) => <article className={`service-admin-card ${service.active ? "" : "disabled"}`} key={service.id}><i style={{ background: service.color }} /><div className="service-admin-head"><span>{formatDuration(service.duration)}</span><label className="switch"><input checked={service.active} onChange={() => onToggle(service.id)} type="checkbox" /><b /></label></div><h3>{service.name}</h3><p>{service.description || "Atendimento configurado para agendamento online."}</p><strong>{money.format(service.priceCents / 100)}</strong><span className="service-payment-label">{servicePaymentLabel(service, money)}</span><small>{service.professionalIds.map((id) => professionals.find((professional) => professional.id === id)?.name).filter(Boolean).join(", ") || "Sem profissional vinculado"}</small><div className="service-card-actions"><button onClick={() => onEdit(service)} type="button">Editar atividade e vínculos</button></div></article>)}<button className="add-service-card" onClick={onAdd} type="button"><span>＋</span><strong>Adicionar atividade</strong><small>Vincule à equipe responsável</small></button></section></div>;
 }
 
 function Availability({ professionals, selectedId, rules, saving, onSelect, onChange, onSave }: { professionals: AdminProfessional[]; selectedId: string; rules: DayRule[]; saving: boolean; onSelect: (id: string) => void; onChange: (weekday: number, patch: Partial<DayRule>) => void; onSave: () => void }) {
@@ -767,10 +865,38 @@ function ModalHead({ eyebrow, title, onClose }: { eyebrow: string; title: string
 function ModalActions({ saving, label, onClose }: { saving: boolean; label: string; onClose: () => void }) { return <div className="modal-actions"><button className="admin-ghost" onClick={onClose} type="button">Cancelar</button><button className="admin-primary" disabled={saving} type="submit">{saving ? "Salvando..." : label}</button></div>; }
 function CheckboxGroup({ name, title, items, selectedIds }: { name: string; title: string; items: Array<{ id: string; label: string }>; selectedIds?: string[] }) { return <fieldset className="checkbox-group"><legend>{title}</legend>{items.length ? items.map((item) => <label key={item.id}><input defaultChecked={selectedIds ? selectedIds.includes(item.id) : true} name={name} type="checkbox" value={item.id} />{item.label}</label>) : <p>Cadastre o outro lado do vínculo primeiro.</p>}</fieldset>; }
 
-function mapService(item: Record<string, unknown>): AdminService { return { id: String(item.id), name: String(item.name), description: String(item.description ?? ""), duration: Number(item.duration_minutes), priceCents: Number(item.price_cents), active: Boolean(item.is_active), color: String(item.color ?? "#567f72"), professionalIds: Array.isArray(item.professional_ids) ? item.professional_ids.map(String) : [] }; }
+function mapService(item: Record<string, unknown>): AdminService { return { id: String(item.id), name: String(item.name), description: String(item.description ?? ""), duration: Number(item.duration_minutes), priceCents: Number(item.price_cents), paymentType: (String(item.payment_type ?? "none") as AdminService["paymentType"]), depositAmountCents: item.deposit_amount_cents == null ? null : Number(item.deposit_amount_cents), active: Boolean(item.is_active), color: String(item.color ?? "#567f72"), professionalIds: Array.isArray(item.professional_ids) ? item.professional_ids.map(String) : [] }; }
 function mapProfessional(item: Record<string, unknown>): AdminProfessional { return { id: String(item.id), name: String(item.name), title: String(item.title ?? "Profissional"), bio: String(item.bio ?? ""), email: String(item.email ?? ""), color: String(item.color ?? "#17624f"), active: Boolean(item.is_active), serviceIds: Array.isArray(item.service_ids) ? item.service_ids.map(String) : [], googleStatus: item.google_status ? String(item.google_status) : null }; }
 function rulesFor(rawRules: RawRule[], professionalId: string) { return emptyRules().map((day) => { const row = rawRules.find((item) => item.professional_id === professionalId && Number(item.weekday) === day.weekday && Boolean(item.is_active)); return row ? { weekday: day.weekday, enabled: true, start: row.start_time, end: row.end_time, interval: Number(row.slot_interval_minutes) } : day; }); }
 function initialsFor(name: string) { return name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase(); }
+function paymentMethodLabel(method?: string | null) {
+  if (method === "pix") return "Pix";
+  if (method === "contact") return "Contato";
+  if (method === "on_site") return "No local";
+  return "Sem pagamento manual";
+}
+
+function paymentStatusLabel(status: string, method?: string | null) {
+  if (status === "paid") return "Pago";
+  if (status === "proof_sent") return "Comprovante enviado";
+  if (status === "rejected") return "Pagamento rejeitado";
+  if (status === "pending" && method === "contact") return "Aguardando contato para pagamento";
+  if (status === "pending") return "Aguardando pagamento";
+  if (status === "failed") return "Pagamento falhou";
+  if (status === "refunded") return "Estornado";
+  return "Não exigido";
+}
+
+function formatMoney(cents: number) {
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(cents / 100);
+}
+
+function servicePaymentLabel(service: AdminService, money: Intl.NumberFormat) {
+  if (service.paymentType === "full") return "Pagamento integral antecipado";
+  if (service.paymentType === "deposit") return `Sinal de ${money.format((service.depositAmountCents ?? 0) / 100)}`;
+  return "Sem pagamento antecipado";
+}
+
 function formatDuration(minutes: number) {
   if (minutes < 60) return `${minutes} min`;
   const hours = Math.floor(minutes / 60);

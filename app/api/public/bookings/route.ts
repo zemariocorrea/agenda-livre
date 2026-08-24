@@ -2,6 +2,7 @@ import { googleCalendarLink } from "@/lib/calendar-link";
 import { listAvailableSlotsForService } from "@/lib/availability";
 import { getD1 } from "@/lib/d1";
 import { cleanText, isEmail, jsonError, normalizeEmail } from "@/lib/http";
+import { advancePaymentAmountCents, manualPaymentMethods, servicePaymentType, type ManualPaymentMethod } from "@/lib/manual-payment";
 import { createStripeCheckout } from "@/lib/integrations/stripe";
 import { addMinutes, dateKeyInTimeZone } from "@/lib/timezone";
 
@@ -11,7 +12,31 @@ type BookingPayload = {
   professionalId?: string;
   startsAtUtc?: string;
   customer?: { name?: string; email?: string; phone?: string; notes?: string };
+  paymentMethod?: ManualPaymentMethod;
   paymentPreference?: "online" | "at_venue";
+};
+
+type TenantRow = {
+  id: string;
+  name: string;
+  timezone: string;
+  currency: string;
+  location: string;
+  payment_enabled: number;
+  pix_enabled: number;
+  pay_on_site_enabled: number;
+  contact_for_payment_enabled: number;
+  pix_key: string;
+  pix_key_type: string;
+  pix_holder_name: string;
+  require_payment_to_confirm: number;
+};
+
+type ServiceRow = {
+  id: string;
+  name: string;
+  payment_type: string;
+  deposit_amount_cents: number | null;
 };
 
 export async function POST(request: Request) {
@@ -32,23 +57,18 @@ export async function POST(request: Request) {
   const phone = cleanText(payload.customer?.phone, 40);
   const notes = cleanText(payload.customer?.notes, 1000);
   const startsAt = new Date(payload.startsAtUtc ?? "");
-  const paymentPreference = payload.paymentPreference === "online" ? "online" : "at_venue";
   if (!serviceId || !name || !isEmail(email) || !phone || Number.isNaN(startsAt.getTime())) {
     return jsonError("Preencha serviço, horário, nome, e-mail e celular corretamente.");
   }
 
   const tenant = await d1.prepare(`
-    SELECT id, name, timezone, currency, location
+    SELECT id, name, timezone, currency, location,
+           payment_enabled, pix_enabled, pay_on_site_enabled, contact_for_payment_enabled,
+           pix_key, pix_key_type, pix_holder_name, require_payment_to_confirm
     FROM tenants
     WHERE slug = ? AND is_active = 1
     LIMIT 1
-  `).bind(tenantSlug).first<{
-    id: string;
-    name: string;
-    timezone: string;
-    currency: string;
-    location: string;
-  }>();
+  `).bind(tenantSlug).first<TenantRow>();
   if (!tenant) return jsonError("Empresa não encontrada.", 404, "TENANT_NOT_FOUND");
 
   const existing = await d1.prepare(`
@@ -60,11 +80,11 @@ export async function POST(request: Request) {
   if (existing) return Response.json(JSON.parse(existing.response_json), { status: 200 });
 
   const service = await d1.prepare(`
-    SELECT id, name
+    SELECT id, name, payment_type, deposit_amount_cents
     FROM services
     WHERE id = ? AND tenant_id = ? AND is_active = 1
     LIMIT 1
-  `).bind(serviceId, tenant.id).first<{ id: string; name: string }>();
+  `).bind(serviceId, tenant.id).first<ServiceRow>();
   if (!service) return jsonError("Serviço não encontrado.", 404, "SERVICE_NOT_FOUND");
 
   const localDate = dateKeyInTimeZone(startsAt, tenant.timezone);
@@ -87,6 +107,54 @@ export async function POST(request: Request) {
     return jsonError("O profissional selecionado não está mais disponível.", 409, "PROFESSIONAL_UNAVAILABLE");
   }
 
+  const paymentType = servicePaymentType(service.payment_type);
+  const configuredAdvanceCents = Boolean(tenant.payment_enabled)
+    ? advancePaymentAmountCents(paymentType, professional.priceCents, service.deposit_amount_cents)
+    : 0;
+  const advanceRequired = configuredAdvanceCents > 0;
+  let paymentMethod = manualPaymentMethods.has(payload.paymentMethod as ManualPaymentMethod)
+    ? payload.paymentMethod as ManualPaymentMethod
+    : null;
+
+  if (advanceRequired && !paymentMethod && payload.paymentPreference === "at_venue" && Boolean(tenant.pay_on_site_enabled)) {
+    paymentMethod = "on_site";
+  }
+
+  if (advanceRequired) {
+    if (!paymentMethod) return jsonError("Escolha uma forma de pagamento para reservar o horário.", 400, "PAYMENT_METHOD_REQUIRED");
+    if (paymentMethod === "pix" && (!tenant.pix_enabled || !tenant.pix_key)) {
+      return jsonError("Pix não está disponível para esta empresa.", 400, "PIX_NOT_AVAILABLE");
+    }
+    if (paymentMethod === "contact" && !tenant.contact_for_payment_enabled) {
+      return jsonError("Pagamento por contato não está disponível para esta empresa.", 400, "CONTACT_PAYMENT_NOT_AVAILABLE");
+    }
+    if (paymentMethod === "on_site" && !tenant.pay_on_site_enabled) {
+      return jsonError("Pagamento no local não está disponível para esta empresa.", 400, "ON_SITE_PAYMENT_NOT_AVAILABLE");
+    }
+  } else {
+    paymentMethod = null;
+  }
+
+  const legacyOnlinePayment = !paymentMethod
+    && payload.paymentPreference === "online"
+    && professional.priceCents > 0;
+  const paymentPreference = legacyOnlinePayment ? "online" : "at_venue";
+  const paymentStatus = legacyOnlinePayment
+    ? "pending"
+    : paymentMethod === "pix" || paymentMethod === "contact"
+      ? "pending"
+      : "not_required";
+  const paymentAmountCents = legacyOnlinePayment
+    ? professional.priceCents
+    : paymentMethod === "on_site"
+      ? professional.priceCents
+      : paymentMethod
+        ? configuredAdvanceCents
+        : 0;
+  const appointmentStatus = paymentMethod && paymentMethod !== "on_site" && Boolean(tenant.require_payment_to_confirm)
+    ? "pending"
+    : "confirmed";
+
   const tenantOwner = await d1.prepare(`
     SELECT email
     FROM tenant_members
@@ -102,20 +170,20 @@ export async function POST(request: Request) {
   const endsAt = new Date(selectedSlot.endsAtUtc);
   const busyStartsAt = addMinutes(startsAt, -professional.bufferBeforeMinutes);
   const busyEndsAt = addMinutes(endsAt, professional.bufferAfterMinutes);
-  const onlinePayment = paymentPreference === "online" && professional.priceCents > 0;
-  const paymentStatus = onlinePayment ? "pending" : "not_required";
-  const calendarUrl = googleCalendarLink({
-    title: `${service.name} · ${tenant.name}`,
-    startsAtUtc: startsAt.toISOString(),
-    endsAtUtc: endsAt.toISOString(),
-    details: `Agendamento com ${professional.name} confirmado para ${name}.`,
-    location: tenant.location,
-  });
+  const calendarUrl = appointmentStatus === "confirmed"
+    ? googleCalendarLink({
+        title: `${service.name} · ${tenant.name}`,
+        startsAtUtc: startsAt.toISOString(),
+        endsAtUtc: endsAt.toISOString(),
+        details: `Agendamento com ${professional.name} confirmado para ${name}.`,
+        location: tenant.location,
+      })
+    : "";
   const responsePayload: Record<string, unknown> = {
     appointment: {
       id: appointmentId,
       publicToken,
-      status: "confirmed",
+      status: appointmentStatus,
       startsAtUtc: startsAt.toISOString(),
       endsAtUtc: endsAt.toISOString(),
       timezone: tenant.timezone,
@@ -124,8 +192,19 @@ export async function POST(request: Request) {
       professionalName: professional.name,
       customerName: name,
       paymentPreference,
+      paymentMethod,
       paymentStatus,
+      paymentAmountCents,
       priceCents: professional.priceCents,
+    },
+    payment: {
+      method: paymentMethod,
+      status: paymentStatus,
+      amountCents: paymentAmountCents,
+      requiresConfirmation: appointmentStatus === "pending",
+      pixKey: paymentMethod === "pix" ? tenant.pix_key : "",
+      pixKeyType: paymentMethod === "pix" ? tenant.pix_key_type : "",
+      pixHolderName: paymentMethod === "pix" ? tenant.pix_holder_name : "",
     },
     calendarUrl,
   };
@@ -154,8 +233,9 @@ export async function POST(request: Request) {
         customer_name, customer_email, customer_phone, customer_notes,
         starts_at_utc, ends_at_utc, busy_starts_at_utc, busy_ends_at_utc,
         duration_minutes, buffer_before_minutes, buffer_after_minutes, price_cents,
-        timezone, status, payment_preference, payment_status, public_token
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?)
+        timezone, status, payment_preference, payment_status, payment_method,
+        payment_amount_cents, public_token
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       appointmentId,
       tenant.id,
@@ -174,24 +254,33 @@ export async function POST(request: Request) {
       professional.bufferAfterMinutes,
       professional.priceCents,
       tenant.timezone,
+      appointmentStatus,
       paymentPreference,
       paymentStatus,
+      paymentMethod,
+      paymentAmountCents,
       publicToken,
     ),
-    d1.prepare("INSERT INTO outbox_events (id, tenant_id, aggregate_type, aggregate_id, event_type, payload_json) VALUES (?, ?, 'appointment', ?, 'appointment.created', ?)")
-      .bind(crypto.randomUUID(), tenant.id, appointmentId, eventPayload),
-    d1.prepare("INSERT INTO outbox_events (id, tenant_id, aggregate_type, aggregate_id, event_type, payload_json) VALUES (?, ?, 'appointment', ?, 'notification.customer.confirmation', ?)")
-      .bind(crypto.randomUUID(), tenant.id, appointmentId, eventPayload),
     d1.prepare("INSERT INTO outbox_events (id, tenant_id, aggregate_type, aggregate_id, event_type, payload_json) VALUES (?, ?, 'appointment', ?, 'notification.admin.new_booking', ?)")
       .bind(crypto.randomUUID(), tenant.id, appointmentId, eventPayload),
-    d1.prepare("INSERT INTO notification_deliveries (id, tenant_id, appointment_id, channel, recipient) VALUES (?, ?, ?, 'email', ?)")
-      .bind(crypto.randomUUID(), tenant.id, appointmentId, email),
     d1.prepare("INSERT INTO notification_deliveries (id, tenant_id, appointment_id, channel, recipient) VALUES (?, ?, ?, 'in_app', ?)")
       .bind(crypto.randomUUID(), tenant.id, appointmentId, notificationEmail),
     d1.prepare("INSERT INTO idempotency_keys (id, tenant_id, scope, key, resource_id, response_json, expires_at) VALUES (?, ?, 'booking.create', ?, ?, ?, ?)")
       .bind(crypto.randomUUID(), tenant.id, idempotencyKey, appointmentId, JSON.stringify(responsePayload), expiresAt),
   ];
-  if (onlinePayment) {
+
+  if (appointmentStatus === "confirmed") {
+    statements.push(
+      d1.prepare("INSERT INTO outbox_events (id, tenant_id, aggregate_type, aggregate_id, event_type, payload_json) VALUES (?, ?, 'appointment', ?, 'appointment.created', ?)")
+        .bind(crypto.randomUUID(), tenant.id, appointmentId, eventPayload),
+      d1.prepare("INSERT INTO outbox_events (id, tenant_id, aggregate_type, aggregate_id, event_type, payload_json) VALUES (?, ?, 'appointment', ?, 'notification.customer.confirmation', ?)")
+        .bind(crypto.randomUUID(), tenant.id, appointmentId, eventPayload),
+      d1.prepare("INSERT INTO notification_deliveries (id, tenant_id, appointment_id, channel, recipient) VALUES (?, ?, ?, 'email', ?)")
+        .bind(crypto.randomUUID(), tenant.id, appointmentId, email),
+    );
+  }
+
+  if (legacyOnlinePayment) {
     statements.push(d1.prepare("INSERT INTO payments (id, tenant_id, appointment_id, amount_cents, currency, status) VALUES (?, ?, ?, ?, ?, 'pending')")
       .bind(paymentId, tenant.id, appointmentId, professional.priceCents, tenant.currency));
   }
@@ -214,7 +303,7 @@ export async function POST(request: Request) {
     throw error;
   }
 
-  if (onlinePayment) {
+  if (legacyOnlinePayment) {
     try {
       const origin = new URL(request.url).origin;
       const checkout = await createStripeCheckout({

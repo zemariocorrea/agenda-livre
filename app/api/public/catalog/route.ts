@@ -31,6 +31,14 @@ type PublicTenant = {
   promotion_title: string;
   promotion_description: string;
   promotion_image_url: string;
+  payment_enabled: number;
+  pix_enabled: number;
+  pay_on_site_enabled: number;
+  contact_for_payment_enabled: number;
+  pix_key: string;
+  pix_key_type: string;
+  pix_holder_name: string;
+  require_payment_to_confirm: number;
 };
 
 export async function GET(request: Request) {
@@ -59,7 +67,15 @@ export async function GET(request: Request) {
         promotion_enabled,
         promotion_title,
         promotion_description,
-        promotion_image_url
+        promotion_image_url,
+        payment_enabled,
+        pix_enabled,
+        pay_on_site_enabled,
+        contact_for_payment_enabled,
+        pix_key,
+        pix_key_type,
+        pix_holder_name,
+        require_payment_to_confirm
       FROM tenants
       WHERE slug = ? AND is_active = 1
       LIMIT 1
@@ -69,7 +85,7 @@ export async function GET(request: Request) {
 
     const [servicesResult, linksResult] = await d1.batch([
       d1.prepare(`
-        SELECT id, name, description, duration_minutes, price_cents, color
+        SELECT id, name, description, duration_minutes, price_cents, payment_type, deposit_amount_cents, color
         FROM services
         WHERE tenant_id = ? AND is_active = 1
         ORDER BY sort_order, name
@@ -121,6 +137,8 @@ export async function GET(request: Request) {
           durationMinutes: Number(service.duration_minutes),
           priceCents: Number(service.price_cents),
           color: String(service.color),
+          paymentType: String(service.payment_type ?? "none"),
+          depositAmountCents: service.deposit_amount_cents == null ? null : Number(service.deposit_amount_cents),
           professionals,
         };
       })
@@ -141,6 +159,16 @@ export async function GET(request: Request) {
         logoUrl: tenant.logo_url,
         coverImageUrl: tenant.cover_image_url,
         siteTemplate: tenant.site_template,
+        payment: {
+          enabled: Boolean(tenant.payment_enabled),
+          pixEnabled: Boolean(tenant.pix_enabled),
+          payOnSiteEnabled: Boolean(tenant.pay_on_site_enabled),
+          contactForPaymentEnabled: Boolean(tenant.contact_for_payment_enabled),
+          pixKey: tenant.pix_key,
+          pixKeyType: tenant.pix_key_type,
+          pixHolderName: tenant.pix_holder_name,
+          requirePaymentToConfirm: Boolean(tenant.require_payment_to_confirm),
+        },
         promotion: {
           enabled: Boolean(tenant.promotion_enabled),
           title: tenant.promotion_title,

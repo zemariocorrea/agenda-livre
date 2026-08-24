@@ -12,6 +12,8 @@ export async function GET(request: Request) {
   const rows = await d1.prepare(`
     SELECT appointment.id, appointment.customer_name, appointment.customer_email, appointment.customer_phone,
            appointment.starts_at_utc, appointment.ends_at_utc, appointment.status, appointment.payment_status,
+           appointment.payment_method, appointment.payment_amount_cents,
+           CASE WHEN appointment.payment_proof_key IS NULL OR appointment.payment_proof_key = '' THEN 0 ELSE 1 END AS payment_proof_available,
            appointment.price_cents, appointment.public_token,
            service.name AS service_name, professional.id AS professional_id, professional.name AS professional_name,
            professional.color AS professional_color

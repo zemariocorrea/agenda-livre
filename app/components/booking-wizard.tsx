@@ -2,6 +2,9 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
+type ManualPaymentMethod = "pix" | "contact" | "on_site";
+type PaymentStatus = "not_required" | "pending" | "proof_sent" | "paid" | "rejected" | "failed" | "refunded";
+
 type Tenant = {
   slug: string;
   name: string;
@@ -9,6 +12,16 @@ type Tenant = {
   timezone: string;
   currency: string;
   location: string;
+  payment: {
+    enabled: boolean;
+    pixEnabled: boolean;
+    payOnSiteEnabled: boolean;
+    contactForPaymentEnabled: boolean;
+    pixKey: string;
+    pixKeyType: string;
+    pixHolderName: string;
+    requirePaymentToConfirm: boolean;
+  };
 };
 
 type Professional = {
@@ -27,6 +40,8 @@ type Service = {
   description: string;
   durationMinutes: number;
   priceCents: number;
+  paymentType: "none" | "full" | "deposit";
+  depositAmountCents: number | null;
   color: string;
   professionals: Professional[];
 };
@@ -49,6 +64,27 @@ type Slot = {
   priceCents: number;
 };
 
+type BookingResult = {
+  appointment: {
+    id: string;
+    publicToken: string;
+    status: string;
+    paymentMethod: ManualPaymentMethod | null;
+    paymentStatus: PaymentStatus;
+    paymentAmountCents: number;
+  };
+  payment: {
+    method: ManualPaymentMethod | null;
+    status: PaymentStatus;
+    amountCents: number;
+    requiresConfirmation: boolean;
+    pixKey: string;
+    pixKeyType: string;
+    pixHolderName: string;
+  };
+  calendarUrl?: string;
+};
+
 const defaultTenant: Tenant = {
   slug: "clinica-aurora",
   name: "Clínica Aurora",
@@ -56,6 +92,16 @@ const defaultTenant: Tenant = {
   timezone: "America/Sao_Paulo",
   currency: "BRL",
   location: "Curitiba · PR",
+  payment: {
+    enabled: false,
+    pixEnabled: false,
+    payOnSiteEnabled: true,
+    contactForPaymentEnabled: false,
+    pixKey: "",
+    pixKeyType: "",
+    pixHolderName: "",
+    requirePaymentToConfirm: true,
+  },
 };
 
 export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: string }) {
@@ -66,15 +112,16 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
   const [professionalId, setProfessionalId] = useState("any");
   const [dateIndex, setDateIndex] = useState(0);
   const [slotKey, setSlotKey] = useState("");
-  const [payNow, setPayNow] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<ManualPaymentMethod | "">("");
   const [customer, setCustomer] = useState({ name: "", email: "", phone: "" });
   const [availableSlots, setAvailableSlots] = useState<Slot[]>([]);
   const [loadingCatalog, setLoadingCatalog] = useState(true);
   const [loadingSlots, setLoadingSlots] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [paymentActionBusy, setPaymentActionBusy] = useState(false);
   const [error, setError] = useState("");
-  const [calendarUrl, setCalendarUrl] = useState("");
   const [paymentMessage, setPaymentMessage] = useState("");
+  const [bookingResult, setBookingResult] = useState<BookingResult | null>(null);
   const idempotencyKey = useRef("");
 
   const dates = useMemo(() => buildDateOptions(tenant.timezone), [tenant.timezone]);
@@ -85,6 +132,21 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
     () => new Intl.NumberFormat("pt-BR", { style: "currency", currency: tenant.currency }),
     [tenant.currency],
   );
+  const advanceAmountCents = service && selectedSlot && tenant.payment.enabled
+    ? service.paymentType === "full"
+      ? selectedSlot.priceCents
+      : service.paymentType === "deposit"
+        ? service.depositAmountCents ?? 0
+        : 0
+    : 0;
+  const requiresAdvance = advanceAmountCents > 0;
+  const availablePaymentMethods = useMemo(() => {
+    const methods: ManualPaymentMethod[] = [];
+    if (tenant.payment.pixEnabled && tenant.payment.pixKey) methods.push("pix");
+    if (tenant.payment.contactForPaymentEnabled) methods.push("contact");
+    if (tenant.payment.payOnSiteEnabled) methods.push("on_site");
+    return methods;
+  }, [tenant.payment]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -134,10 +196,22 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
     return () => controller.abort();
   }, [selectedDate, serviceId, professionalId, step, tenant.slug]);
 
+  useEffect(() => {
+    if (step !== 3) return;
+    if (!requiresAdvance) {
+      setPaymentMethod("");
+      return;
+    }
+    setPaymentMethod((current) => availablePaymentMethods.includes(current as ManualPaymentMethod)
+      ? current
+      : (availablePaymentMethods[0] ?? ""));
+  }, [availablePaymentMethods, requiresAdvance, step]);
+
   function selectService(id: string) {
     setServiceId(id);
     setProfessionalId("any");
     setSlotKey("");
+    setPaymentMethod("");
     setError("");
   }
 
@@ -154,6 +228,10 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
       setError("Escolha novamente um horário disponível.");
       return;
     }
+    if (requiresAdvance && !paymentMethod) {
+      setError("Escolha uma forma de pagamento para reservar o horário.");
+      return;
+    }
     if (!idempotencyKey.current) idempotencyKey.current = crypto.randomUUID();
     setSubmitting(true);
     setError("");
@@ -167,17 +245,12 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
           professionalId: selectedSlot.professionalId,
           startsAtUtc: selectedSlot.startsAtUtc,
           customer,
-          paymentPreference: payNow ? "online" : "at_venue",
+          paymentMethod: requiresAdvance ? paymentMethod : undefined,
         }),
       });
-      const data = await response.json() as { calendarUrl?: string; checkoutUrl?: string; paymentFallback?: string; error?: { message?: string } };
+      const data = await response.json() as BookingResult & { error?: { message?: string } };
       if (!response.ok) throw new Error(data.error?.message ?? "Não foi possível reservar esse horário.");
-      setCalendarUrl(data.calendarUrl ?? "");
-      setPaymentMessage(data.paymentFallback ?? "");
-      if (data.checkoutUrl) {
-        window.location.assign(data.checkoutUrl);
-        return;
-      }
+      setBookingResult(data);
       setStep(4);
     } catch (submitError) {
       idempotencyKey.current = "";
@@ -187,31 +260,111 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
     }
   }
 
+  async function reportPixPayment() {
+    if (!bookingResult?.appointment.publicToken) return;
+    setPaymentActionBusy(true);
+    setPaymentMessage("");
+    try {
+      const response = await fetch(`/api/public/bookings/${encodeURIComponent(bookingResult.appointment.publicToken)}/payment`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "proof_sent" }),
+      });
+      const data = await response.json() as { paymentStatus?: PaymentStatus; error?: { message?: string } };
+      if (!response.ok) throw new Error(data.error?.message ?? "Não foi possível registrar o pagamento.");
+      setBookingResult((current) => current ? {
+        ...current,
+        appointment: { ...current.appointment, paymentStatus: "proof_sent" },
+        payment: { ...current.payment, status: "proof_sent" },
+      } : current);
+      setPaymentMessage("Pagamento informado. O estabelecimento fará a conferência para confirmar o horário.");
+    } catch (cause) {
+      setPaymentMessage(cause instanceof Error ? cause.message : "Não foi possível registrar o pagamento.");
+    } finally {
+      setPaymentActionBusy(false);
+    }
+  }
+
+  async function uploadProof(file?: File) {
+    if (!file || !bookingResult?.appointment.publicToken) return;
+    setPaymentActionBusy(true);
+    setPaymentMessage("");
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const response = await fetch(`/api/public/bookings/${encodeURIComponent(bookingResult.appointment.publicToken)}/payment-proof`, { method: "POST", body });
+      const data = await response.json() as { paymentStatus?: PaymentStatus; error?: { message?: string } };
+      if (!response.ok) throw new Error(data.error?.message ?? "Não foi possível enviar o comprovante.");
+      setBookingResult((current) => current ? {
+        ...current,
+        appointment: { ...current.appointment, paymentStatus: "proof_sent" },
+        payment: { ...current.payment, status: "proof_sent" },
+      } : current);
+      setPaymentMessage("Comprovante enviado. O estabelecimento fará a conferência para confirmar o horário.");
+    } catch (cause) {
+      setPaymentMessage(cause instanceof Error ? cause.message : "Não foi possível enviar o comprovante.");
+    } finally {
+      setPaymentActionBusy(false);
+    }
+  }
+
+  async function copyPixKey() {
+    const key = bookingResult?.payment.pixKey;
+    if (!key) return;
+    try {
+      await navigator.clipboard.writeText(key);
+      setPaymentMessage("Chave Pix copiada.");
+    } catch {
+      setPaymentMessage("Não foi possível copiar automaticamente. Selecione e copie a chave Pix exibida.");
+    }
+  }
+
   function restart() {
     idempotencyKey.current = "";
     setCustomer({ name: "", email: "", phone: "" });
-    setCalendarUrl("");
     setPaymentMessage("");
-    setPayNow(false);
+    setBookingResult(null);
+    setPaymentMethod("");
     setProfessionalId("any");
     setStep(1);
   }
 
-  if (step === 4 && service && selectedSlot) {
+  if (step === 4 && service && selectedSlot && bookingResult) {
+    const firstName = customer.name.split(" ")[0] || "cliente";
+    const pendingConfirmation = bookingResult.appointment.status === "pending";
     return (
       <section className="booking-card confirmation-card" aria-live="polite">
-        <div className="success-mark" aria-hidden="true">✓</div>
-        <p className="eyebrow">Horário reservado</p>
-        <h2>Pronto, {customer.name.split(" ")[0] || "seu horário está confirmado"}!</h2>
-        <p className="confirmation-copy">Enviamos os detalhes para <strong>{customer.email || "seu e-mail"}</strong>.</p>
+        <div className="success-mark" aria-hidden="true">{pendingConfirmation ? "⌛" : "✓"}</div>
+        <p className="eyebrow">{pendingConfirmation ? "Horário reservado temporariamente" : "Agendamento confirmado"}</p>
+        <h2>{pendingConfirmation ? `Reserva criada, ${firstName}.` : `Pronto, ${firstName}!`}</h2>
+        <p className="confirmation-copy">{pendingConfirmation ? "Finalize a etapa de pagamento para que o estabelecimento possa confirmar seu horário." : <>Enviamos os detalhes para <strong>{customer.email || "seu e-mail"}</strong>.</>}</p>
         <dl className="confirmation-details">
           <div><dt>Atendimento</dt><dd>{service.name}</dd></div>
           <div><dt>Profissional</dt><dd>{selectedSlot.professionalName}</dd></div>
           <div><dt>Quando</dt><dd>{formatAppointment(selectedSlot.startsAtUtc, tenant.timezone)}</dd></div>
-          <div><dt>Pagamento</dt><dd>{payNow && selectedSlot.priceCents > 0 ? "Online solicitado" : "No atendimento"}</dd></div>
+          <div><dt>Valor do serviço</dt><dd>{money.format(selectedSlot.priceCents / 100)}</dd></div>
+          <div><dt>Pagamento</dt><dd>{paymentMethodLabel(bookingResult.payment.method)}</dd></div>
+          {bookingResult.payment.amountCents > 0 && <div><dt>{service.paymentType === "deposit" ? "Sinal para reserva" : "Valor esperado"}</dt><dd>{money.format(bookingResult.payment.amountCents / 100)}</dd></div>}
         </dl>
+
+        {bookingResult.payment.method === "pix" && <section className="pix-instructions">
+          <p className="eyebrow">Pagamento via Pix</p>
+          <h3>Faça um Pix de {money.format(bookingResult.payment.amountCents / 100)}</h3>
+          <div className="pix-key-box"><span>Chave Pix</span><strong>{bookingResult.payment.pixKey}</strong>{bookingResult.payment.pixKeyType && <small>{pixKeyTypeLabel(bookingResult.payment.pixKeyType)}</small>}</div>
+          {bookingResult.payment.pixHolderName && <p>Titular: <strong>{bookingResult.payment.pixHolderName}</strong></p>}
+          <button className="secondary-button" onClick={copyPixKey} type="button">Copiar chave Pix</button>
+          <p>Após realizar o pagamento, envie o comprovante abaixo para que o estabelecimento possa confirmar seu horário.</p>
+          <div className="payment-proof-actions">
+            <label className="primary-button proof-upload-button">{paymentActionBusy ? "Enviando..." : "Enviar comprovante"}<input accept="image/png,image/jpeg,image/webp,application/pdf" disabled={paymentActionBusy} onChange={(event) => uploadProof(event.target.files?.[0])} type="file" /></label>
+            <button className="secondary-button" disabled={paymentActionBusy || bookingResult.payment.status === "proof_sent"} onClick={reportPixPayment} type="button">{bookingResult.payment.status === "proof_sent" ? "Pagamento informado" : "Já fiz o pagamento"}</button>
+          </div>
+        </section>}
+
+        {bookingResult.payment.method === "contact" && <p className="payment-message">Solicitação registrada. O estabelecimento entrará em contato com você para combinar o pagamento e confirmar o horário.</p>}
+        {bookingResult.payment.method === "on_site" && <p className="payment-message">Pagamento combinado para o local do atendimento. Seu horário já está confirmado.</p>}
+        {!bookingResult.payment.method && <p className="payment-message">Este atendimento não exige pagamento antecipado. Seu horário já está confirmado.</p>}
         {paymentMessage && <p className="payment-message">{paymentMessage}</p>}
-        {calendarUrl ? <a className="primary-button calendar-button" href={calendarUrl} target="_blank" rel="noreferrer">Adicionar ao Google Agenda</a> : null}
+        {bookingResult.calendarUrl ? <a className="primary-button calendar-button" href={bookingResult.calendarUrl} target="_blank" rel="noreferrer">Adicionar ao Google Agenda</a> : null}
         <button className="text-button" type="button" onClick={restart}>Fazer outro agendamento</button>
       </section>
     );
@@ -225,7 +378,7 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
           <h2>
             {step === 1 && "Como podemos cuidar de você?"}
             {step === 2 && "Escolha profissional e horário"}
-            {step === 3 && "Só falta confirmar"}
+            {step === 3 && "Confirme sua reserva"}
           </h2>
         </div>
         <div className="step-dots" aria-label={`Etapa ${step} de 3`}>
@@ -305,22 +458,23 @@ export function BookingWizard({ tenantSlug = "clinica-aurora" }: { tenantSlug?: 
             <label>E-mail<input required type="email" autoComplete="email" maxLength={254} placeholder="voce@email.com" value={customer.email} onChange={(event) => setCustomer({ ...customer, email: event.target.value })} /></label>
             <label>Celular<input required type="tel" autoComplete="tel" maxLength={40} placeholder="(41) 99999-9999" value={customer.phone} onChange={(event) => setCustomer({ ...customer, phone: event.target.value })} /></label>
           </div>
-          <fieldset className="payment-choice">
-            <legend>Como prefere pagar?</legend>
-            <label className={!payNow ? "selected" : ""}>
-              <input type="radio" name="payment" checked={!payNow} onChange={() => setPayNow(false)} />
-              <span><strong>No atendimento</strong><small>Seu horário fica confirmado agora</small></span>
-            </label>
-            {selectedSlot.priceCents > 0 ? (
-              <label className={payNow ? "selected" : ""}>
-                <input type="radio" name="payment" checked={payNow} onChange={() => setPayNow(true)} />
-                <span><strong>Pagar agora</strong><small>Ambiente seguro de pagamento</small></span>
-              </label>
-            ) : null}
-          </fieldset>
+
+          {requiresAdvance ? <section className="payment-summary">
+            <div><span>Valor do serviço</span><strong>{money.format(selectedSlot.priceCents / 100)}</strong></div>
+            <div><span>{service.paymentType === "deposit" ? "Sinal para reserva" : "Pagamento antecipado"}</span><strong>{money.format(advanceAmountCents / 100)}</strong></div>
+          </section> : <p className="payment-message">Este atendimento não exige pagamento antecipado.</p>}
+
+          {requiresAdvance && <fieldset className="payment-choice manual-payment-choice">
+            <legend>Como deseja pagar?</legend>
+            {availablePaymentMethods.includes("pix") && <label className={paymentMethod === "pix" ? "selected" : ""}><input type="radio" name="paymentMethod" checked={paymentMethod === "pix"} onChange={() => setPaymentMethod("pix")} /><span><strong>Pix</strong><small>Receba a chave e envie o comprovante</small></span></label>}
+            {availablePaymentMethods.includes("contact") && <label className={paymentMethod === "contact" ? "selected" : ""}><input type="radio" name="paymentMethod" checked={paymentMethod === "contact"} onChange={() => setPaymentMethod("contact")} /><span><strong>Falar com o estabelecimento</strong><small>O estabelecimento entrará em contato para combinar o pagamento</small></span></label>}
+            {availablePaymentMethods.includes("on_site") && <label className={paymentMethod === "on_site" ? "selected" : ""}><input type="radio" name="paymentMethod" checked={paymentMethod === "on_site"} onChange={() => setPaymentMethod("on_site")} /><span><strong>Pagar no local</strong><small>O horário fica confirmado imediatamente</small></span></label>}
+            {!availablePaymentMethods.length && <p className="form-error">A empresa exige pagamento antecipado, mas ainda não configurou uma forma de pagamento disponível.</p>}
+          </fieldset>}
+
           <div className="button-row">
             <button className="secondary-button" onClick={() => setStep(2)} type="button">Voltar</button>
-            <button className="primary-button" disabled={submitting} type="submit">{submitting ? "Reservando..." : payNow ? "Confirmar e pagar" : "Confirmar agendamento"}</button>
+            <button className="primary-button" disabled={submitting || (requiresAdvance && !paymentMethod)} type="submit">{submitting ? "Reservando..." : requiresAdvance ? "Reservar horário" : "Confirmar agendamento"}</button>
           </div>
           {error && <p className="form-error" role="alert">{error}</p>}
           <p className="privacy-note">Ao confirmar, você concorda com a política de privacidade de {tenant.name}.</p>
@@ -338,6 +492,17 @@ function slotId(slot: Slot) {
 
 function initials(name: string) {
   return name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+}
+
+function paymentMethodLabel(method: ManualPaymentMethod | null) {
+  if (method === "pix") return "Pix";
+  if (method === "contact") return "Contato com o estabelecimento";
+  if (method === "on_site") return "Pagamento no local";
+  return "Não exigido";
+}
+
+function pixKeyTypeLabel(type: string) {
+  return ({ email: "E-mail", phone: "Telefone", cpf: "CPF", cnpj: "CNPJ", random: "Chave aleatória" } as Record<string, string>)[type] ?? type;
 }
 
 function buildDateOptions(timeZone: string): DateOption[] {

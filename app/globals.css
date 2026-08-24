@@ -4419,3 +4419,236 @@ button {
     align-self: flex-start;
   }
 }
+/* Manual payment / Pix reservation */
+.payment-summary {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fafbf8;
+}
+
+.payment-summary>div {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  font-size: 11px;
+}
+
+.payment-summary span {
+  color: var(--ink-soft);
+}
+
+.manual-payment-choice {
+  grid-template-columns: 1fr;
+}
+
+.pix-instructions {
+  width: min(100%, 430px);
+  margin: 4px 0 16px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fafbf8;
+  text-align: left;
+}
+
+.pix-instructions h3 {
+  margin: 4px 0 14px;
+  font-family: var(--font-display);
+  font-size: 18px;
+}
+
+.pix-instructions>p:not(.eyebrow) {
+  color: var(--ink-soft);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.pix-key-box {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  margin-bottom: 10px;
+  border: 1px dashed #b8c7bf;
+  border-radius: 10px;
+  background: white;
+  word-break: break-word;
+}
+
+.pix-key-box span,
+.pix-key-box small {
+  color: var(--ink-soft);
+  font-size: 9px;
+}
+
+.pix-key-box strong {
+  font-size: 13px;
+}
+
+.payment-proof-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.payment-proof-actions .primary-button,
+.payment-proof-actions .secondary-button {
+  width: 100%;
+  margin: 0;
+}
+
+.proof-upload-button {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.proof-upload-button input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.appointment:has(.appointment-status) {
+  grid-template-columns: 46px 3px minmax(170px, 1fr) minmax(180px, auto) 126px;
+}
+
+.appointment-payment {
+  align-items: flex-start;
+  gap: 3px;
+}
+
+.appointment .appointment-payment>span:first-child {
+  display: inline-flex;
+  width: fit-content;
+  margin: 0;
+  padding: 4px 8px;
+  border-radius: 9px;
+  font-size: 8px;
+  font-weight: 750;
+}
+
+.appointment .appointment-payment>span.paid {
+  background: #e5f3eb;
+  color: #297557;
+}
+
+.appointment .appointment-payment>span.pending {
+  background: #f4f0e6;
+  color: #8b7043;
+}
+
+.appointment .appointment-payment>span.rejected {
+  background: #fae8e4;
+  color: #983b31;
+}
+
+.appointment-payment>a {
+  margin-top: 3px;
+  color: #286b59;
+  font-size: 8px;
+  font-weight: 750;
+}
+
+.appointment-payment-actions {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 4px !important;
+}
+
+.appointment-payment-actions button {
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid #d6dfda;
+  border-radius: 7px;
+  background: white;
+  color: #405851;
+  cursor: pointer;
+  font-size: 7px;
+  font-weight: 750;
+}
+
+.service-payment-label {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 8px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: #eef3ef;
+  color: #49645b;
+  font-size: 8px;
+  font-weight: 750;
+}
+
+.payment-method-settings {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.payment-method-settings>label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px solid #d9dfda;
+  border-radius: 10px;
+  background: #fafbf8;
+  color: #405851;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.payment-pix-fields {
+  align-items: start;
+}
+
+.payment-confirm-setting {
+  margin-top: 14px;
+  padding: 12px;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid #e0e5e0;
+  border-radius: 11px;
+  background: #fafbf8;
+}
+
+.payment-confirm-setting>span:first-child {
+  display: flex;
+  flex-direction: column;
+}
+
+.payment-confirm-setting small {
+  margin-top: 3px;
+  color: #82918c;
+  font-size: 8px;
+  font-weight: 500;
+}
+
+@media (max-width: 680px) {
+  .payment-proof-actions,
+  .payment-method-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .appointment:has(.appointment-status) {
+    grid-template-columns: 42px 3px minmax(120px, 1fr);
+  }
+
+  .appointment:has(.appointment-status) .appointment-payment,
+  .appointment-status {
+    grid-column: 3;
+  }
+}

@@ -22,8 +22,9 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     SELECT appointment.id, appointment.status, appointment.google_event_id,
            appointment.customer_name, appointment.customer_email, appointment.customer_phone,
            appointment.starts_at_utc, appointment.ends_at_utc, appointment.timezone,
+           appointment.payment_method, appointment.payment_status,
            appointment.professional_id, professional.name AS professional_name,
-           service.name AS service_name, tenant.location
+           service.name AS service_name, tenant.location, tenant.require_payment_to_confirm
     FROM appointments AS appointment
     INNER JOIN professionals AS professional
       ON professional.id = appointment.professional_id AND professional.tenant_id = appointment.tenant_id
@@ -42,12 +43,23 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     starts_at_utc: string;
     ends_at_utc: string;
     timezone: string;
+    payment_method: string | null;
+    payment_status: string;
     professional_id: string;
     professional_name: string;
     service_name: string;
     location: string;
+    require_payment_to_confirm: number;
   }>();
   if (!appointment) return jsonError("Agendamento não encontrado.", 404, "APPOINTMENT_NOT_FOUND");
+  if (
+    payload.status === "confirmed"
+    && Boolean(appointment.require_payment_to_confirm)
+    && (appointment.payment_method === "pix" || appointment.payment_method === "contact")
+    && appointment.payment_status !== "paid"
+  ) {
+    return jsonError("Confirme o pagamento antes de confirmar este agendamento.", 409, "PAYMENT_CONFIRMATION_REQUIRED");
+  }
 
   const statements = [
     d1.prepare(`

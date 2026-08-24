@@ -1,6 +1,7 @@
 import { adminTenant, requireTenantManager } from "@/lib/admin-auth";
 import { jsonError } from "@/lib/http";
 import { rejectCrossSiteMutation } from "@/lib/auth/request";
+import { siteAssetsBucket } from "@/lib/r2-storage";
 
 const ALLOWED_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 const ALLOWED_KINDS = new Set(["logo", "cover", "promotion"]);
@@ -67,23 +68,6 @@ export async function POST(request: Request) {
     key,
     url,
   }, { status: 201 });
-}
-
-type SiteAssetsBucket = {
-  put(
-    key: string,
-    value: Blob | ReadableStream | ArrayBufferView | ArrayBuffer | string,
-    options?: {
-      httpMetadata?: { contentType?: string };
-      customMetadata?: Record<string, string>;
-    },
-  ): Promise<unknown>;
-};
-
-async function siteAssetsBucket(): Promise<SiteAssetsBucket | null> {
-  const workers = await import("cloudflare:workers");
-  const env = workers.env as unknown as { SITE_ASSETS?: SiteAssetsBucket };
-  return env.SITE_ASSETS ?? null;
 }
 
 function extensionFor(contentType: string) {

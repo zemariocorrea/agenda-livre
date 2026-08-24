@@ -33,6 +33,14 @@ export async function GET(request: Request) {
       promotion_title,
       promotion_description,
       promotion_image_url,
+      payment_enabled,
+      pix_enabled,
+      pay_on_site_enabled,
+      contact_for_payment_enabled,
+      pix_key,
+      pix_key_type,
+      pix_holder_name,
+      require_payment_to_confirm,
       custom_domain,
       is_active
     FROM tenants
@@ -81,6 +89,21 @@ export async function PATCH(request: Request) {
   const promotionEnabled = typeof payload.promotionEnabled === "boolean"
     ? payload.promotionEnabled
     : Boolean(current.promotion_enabled);
+  const paymentEnabled = typeof payload.paymentEnabled === "boolean" ? payload.paymentEnabled : Boolean(current.payment_enabled);
+  const pixEnabled = typeof payload.pixEnabled === "boolean" ? payload.pixEnabled : Boolean(current.pix_enabled);
+  const payOnSiteEnabled = typeof payload.payOnSiteEnabled === "boolean" ? payload.payOnSiteEnabled : Boolean(current.pay_on_site_enabled);
+  const contactForPaymentEnabled = typeof payload.contactForPaymentEnabled === "boolean" ? payload.contactForPaymentEnabled : Boolean(current.contact_for_payment_enabled);
+  const requirePaymentToConfirm = typeof payload.requirePaymentToConfirm === "boolean" ? payload.requirePaymentToConfirm : Boolean(current.require_payment_to_confirm);
+  const pixKey = cleanText(payload.pixKey ?? current.pix_key, 180);
+  const pixKeyType = cleanText(payload.pixKeyType ?? current.pix_key_type, 40);
+  const pixHolderName = cleanText(payload.pixHolderName ?? current.pix_holder_name, 160);
+
+  if (paymentEnabled && !pixEnabled && !payOnSiteEnabled && !contactForPaymentEnabled) {
+    return jsonError("Habilite ao menos uma forma de pagamento.", 400, "PAYMENT_METHOD_REQUIRED");
+  }
+  if (paymentEnabled && pixEnabled && !pixKey) {
+    return jsonError("Informe a chave Pix para habilitar pagamentos via Pix.", 400, "PIX_KEY_REQUIRED");
+  }
 
   await d1.batch([
     d1.prepare(`
@@ -102,6 +125,14 @@ export async function PATCH(request: Request) {
         promotion_title = ?,
         promotion_description = ?,
         promotion_image_url = ?,
+        payment_enabled = ?,
+        pix_enabled = ?,
+        pay_on_site_enabled = ?,
+        contact_for_payment_enabled = ?,
+        pix_key = ?,
+        pix_key_type = ?,
+        pix_holder_name = ?,
+        require_payment_to_confirm = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).bind(
@@ -121,6 +152,14 @@ export async function PATCH(request: Request) {
       cleanText(payload.promotionTitle ?? current.promotion_title, 160),
       cleanText(payload.promotionDescription ?? current.promotion_description, 400),
       cleanAssetUrl(payload.promotionImageUrl ?? current.promotion_image_url),
+      paymentEnabled ? 1 : 0,
+      pixEnabled ? 1 : 0,
+      payOnSiteEnabled ? 1 : 0,
+      contactForPaymentEnabled ? 1 : 0,
+      pixKey,
+      pixKeyType,
+      pixHolderName,
+      requirePaymentToConfirm ? 1 : 0,
       access.tenant.id,
     ),
     d1.prepare(`
@@ -137,6 +176,11 @@ export async function PATCH(request: Request) {
         contactEmail,
         siteTemplate,
         promotionEnabled,
+        paymentEnabled,
+        pixEnabled,
+        payOnSiteEnabled,
+        contactForPaymentEnabled,
+        requirePaymentToConfirm,
       }),
     ),
   ]);

@@ -2,6 +2,7 @@ import { adminTenant } from "@/lib/admin-auth";
 import { getD1 } from "@/lib/d1";
 import { cleanText, jsonError } from "@/lib/http";
 import { rejectCrossSiteMutation } from "@/lib/auth/request";
+import { servicePaymentType, validateServicePayment } from "@/lib/manual-payment";
 
 export async function GET(request: Request) {
   const d1 = await getD1();
@@ -9,7 +10,7 @@ export async function GET(request: Request) {
   const access = await adminTenant(slug);
   if ("error" in access) return access.error;
   const [rows, links] = await d1.batch([
-    d1.prepare("SELECT id, name, description, duration_minutes, buffer_before_minutes, buffer_after_minutes, price_cents, color, is_active, sort_order FROM services WHERE tenant_id = ? ORDER BY sort_order, name").bind(access.tenant.id),
+    d1.prepare("SELECT id, name, description, duration_minutes, buffer_before_minutes, buffer_after_minutes, price_cents, payment_type, deposit_amount_cents, color, is_active, sort_order FROM services WHERE tenant_id = ? ORDER BY sort_order, name").bind(access.tenant.id),
     d1.prepare("SELECT service_id, professional_id FROM professional_services WHERE tenant_id = ? AND is_active = 1").bind(access.tenant.id),
   ]);
   return Response.json({
@@ -34,19 +35,23 @@ export async function POST(request: Request) {
   const description = cleanText(payload.description, 500);
   const duration = Number(payload.durationMinutes);
   const priceCents = Number(payload.priceCents);
+  const paymentType = servicePaymentType(payload.paymentType);
+  const depositAmountCents = paymentType === "deposit" ? Number(payload.depositAmountCents) : null;
+  const paymentError = validateServicePayment(paymentType, priceCents, depositAmountCents);
   if (!name || !Number.isInteger(duration) || duration < 5 || duration > 720 || !Number.isInteger(priceCents) || priceCents < 0) return jsonError("Informe nome, duração e preço válidos.");
+  if (paymentError) return jsonError(paymentError, 400, "INVALID_PAYMENT_CONFIG");
   const id = crypto.randomUUID();
   const professionalIds = await resolveProfessionalIds(d1, access.tenant.id, payload.professionalIds);
   if ("error" in professionalIds) return professionalIds.error;
   await d1.batch([
-    d1.prepare("INSERT INTO services (id, tenant_id, name, description, duration_minutes, price_cents, color, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT MAX(sort_order) + 1 FROM services WHERE tenant_id = ?), 1))")
-      .bind(id, access.tenant.id, name, description, duration, priceCents, cleanText(payload.color, 20) || "#17624f", access.tenant.id),
+    d1.prepare("INSERT INTO services (id, tenant_id, name, description, duration_minutes, price_cents, payment_type, deposit_amount_cents, color, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT MAX(sort_order) + 1 FROM services WHERE tenant_id = ?), 1))")
+      .bind(id, access.tenant.id, name, description, duration, priceCents, paymentType, depositAmountCents, cleanText(payload.color, 20) || "#17624f", access.tenant.id),
     ...professionalIds.value.map((professionalId) => d1.prepare("INSERT INTO professional_services (id, tenant_id, professional_id, service_id) VALUES (?, ?, ?, ?)")
       .bind(crypto.randomUUID(), access.tenant.id, professionalId, id)),
     d1.prepare("INSERT INTO audit_log (id, tenant_id, actor, action, entity_type, entity_id, metadata_json) VALUES (?, ?, ?, 'service.created', 'service', ?, ?)")
-      .bind(crypto.randomUUID(), access.tenant.id, access.user.email, id, JSON.stringify({ name, duration, priceCents, professionalIds: professionalIds.value })),
+      .bind(crypto.randomUUID(), access.tenant.id, access.user.email, id, JSON.stringify({ name, duration, priceCents, paymentType, depositAmountCents, professionalIds: professionalIds.value })),
   ]);
-  return Response.json({ service: { id, name, description, durationMinutes: duration, priceCents, professionalIds: professionalIds.value } }, { status: 201 });
+  return Response.json({ service: { id, name, description, durationMinutes: duration, priceCents, paymentType, depositAmountCents, professionalIds: professionalIds.value } }, { status: 201 });
 }
 
 async function resolveProfessionalIds(d1: D1Database, tenantId: string, value: unknown) {

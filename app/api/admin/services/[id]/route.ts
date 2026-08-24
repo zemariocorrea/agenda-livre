@@ -2,6 +2,7 @@ import { adminTenant } from "@/lib/admin-auth";
 import { getD1 } from "@/lib/d1";
 import { cleanText, jsonError } from "@/lib/http";
 import { rejectCrossSiteMutation } from "@/lib/auth/request";
+import { servicePaymentType, validateServicePayment } from "@/lib/manual-payment";
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   const crossSite = rejectCrossSiteMutation(request);
@@ -17,8 +18,12 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const description = cleanText(payload.description ?? current.description, 500);
   const duration = Number(payload.durationMinutes ?? current.duration_minutes);
   const priceCents = Number(payload.priceCents ?? current.price_cents);
+  const paymentType = servicePaymentType(payload.paymentType ?? current.payment_type);
+  const depositAmountCents = paymentType === "deposit" ? Number(payload.depositAmountCents ?? current.deposit_amount_cents) : null;
+  const paymentError = validateServicePayment(paymentType, priceCents, depositAmountCents);
   const active = typeof payload.isActive === "boolean" ? payload.isActive : Boolean(current.is_active);
   if (!name || !Number.isInteger(duration) || duration < 5 || duration > 720 || !Number.isInteger(priceCents) || priceCents < 0) return jsonError("Informe nome, duração e preço válidos.");
+  if (paymentError) return jsonError(paymentError, 400, "INVALID_PAYMENT_CONFIG");
   const professionalIds = Array.isArray(payload.professionalIds)
     ? [...new Set(payload.professionalIds.map((item) => cleanText(item, 100)).filter(Boolean))]
     : undefined;
@@ -31,8 +36,8 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     }
   }
   const statements = [
-    d1.prepare("UPDATE services SET name = ?, description = ?, duration_minutes = ?, price_cents = ?, color = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND tenant_id = ?")
-      .bind(name, description, duration, priceCents, cleanText(payload.color ?? current.color, 20) || "#17624f", active ? 1 : 0, id, access.tenant.id),
+    d1.prepare("UPDATE services SET name = ?, description = ?, duration_minutes = ?, price_cents = ?, payment_type = ?, deposit_amount_cents = ?, color = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND tenant_id = ?")
+      .bind(name, description, duration, priceCents, paymentType, depositAmountCents, cleanText(payload.color ?? current.color, 20) || "#17624f", active ? 1 : 0, id, access.tenant.id),
   ];
   if (professionalIds) {
     statements.push(d1.prepare("UPDATE professional_services SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE tenant_id = ? AND service_id = ?")
@@ -48,8 +53,8 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   }
   statements.push(
     d1.prepare("INSERT INTO audit_log (id, tenant_id, actor, action, entity_type, entity_id, metadata_json) VALUES (?, ?, ?, 'service.updated', 'service', ?, ?)")
-      .bind(crypto.randomUUID(), access.tenant.id, access.user.email, id, JSON.stringify({ name, duration, priceCents, active, professionalIds })),
+      .bind(crypto.randomUUID(), access.tenant.id, access.user.email, id, JSON.stringify({ name, duration, priceCents, paymentType, depositAmountCents, active, professionalIds })),
   );
   await d1.batch(statements);
-  return Response.json({ service: { id, name, description, durationMinutes: duration, priceCents, isActive: active, professionalIds } });
+  return Response.json({ service: { id, name, description, durationMinutes: duration, priceCents, paymentType, depositAmountCents, isActive: active, professionalIds } });
 }

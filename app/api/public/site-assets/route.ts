@@ -1,4 +1,5 @@
 import { cleanText, jsonError } from "@/lib/http";
+import { siteAssetsBucket } from "@/lib/r2-storage";
 
 export async function GET(request: Request) {
   const key = cleanText(new URL(request.url).searchParams.get("key"), 500);
@@ -22,10 +23,4 @@ export async function GET(request: Request) {
   headers.set("x-content-type-options", "nosniff");
 
   return new Response(object.body, { headers });
-}
-
-async function siteAssetsBucket(): Promise<R2Bucket | null> {
-  const workers = await import("cloudflare:workers");
-  const env = workers.env as unknown as { SITE_ASSETS?: R2Bucket };
-  return env.SITE_ASSETS ?? null;
 }
